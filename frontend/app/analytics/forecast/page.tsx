@@ -86,8 +86,8 @@ const TEXT = {
   riskWatch: { zh: "观察", en: "Watch" },
   riskAtRisk: { zh: "有风险", en: "At Risk" },
   riskRule: {
-    zh: "如果当前库存低于所选客户类型的安全库存，则风险升高。",
-    en: "Risk increases if current stock is below safety stock for the selected customer type.",
+    zh: "规则：<安全库存=红色；>安全库存10%=黄色；>=2.75倍=黄色；>=3倍=红色。",
+    en: "Rules: < safety stock = red; > +10% = yellow; >=2.75x = yellow; >=3x = red.",
   },
 
   ssSection: {
@@ -102,6 +102,9 @@ const TEXT = {
   ssLoaded: { zh: "当前已加载配置条目：", en: "Loaded config entries: " },
 
   modelUnavailableTitle: { zh: "部分模型不可用：", en: "Some models are unavailable: " },
+  aiRiskTitle: { zh: "AI 分析结果和建议", en: "AI Analysis & Suggestions" },
+  aiRiskLoading: { zh: "AI 正在分析当前风险与补货参数...", en: "AI is analyzing current risk and replenishment signals..." },
+  aiRiskAuto: { zh: "自动生成", en: "Auto-generated" },
 };
 
 // -------------------- Helpers --------------------
@@ -114,6 +117,38 @@ function toNum(v: unknown, fallback = 0) {
 }
 function fmtInt(n: number) {
   return Math.round(n).toLocaleString();
+}
+
+function buildRiskFallbackAdvice({
+  lang,
+  risk,
+  reorderQty,
+  leadDemand,
+  projectedStockoutMonth,
+}: {
+  lang: Lang;
+  risk: { tone: "green" | "yellow" | "red"; suggestion: string };
+  reorderQty: number;
+  leadDemand: number;
+  projectedStockoutMonth: string | null;
+}) {
+  const stockoutText = projectedStockoutMonth
+    ? lang === "zh"
+      ? `预计缺货月 ${formatMonthLabel(projectedStockoutMonth)}`
+      : `Projected stockout: ${formatMonthLabel(projectedStockoutMonth)}`
+    : lang === "zh"
+    ? "暂无明确缺货月"
+    : "No clear stockout month";
+
+  if (lang === "zh") {
+    return `AI 分析结果和建议：${risk.suggestion}；交期内需求约 ${fmtInt(leadDemand)}，建议补货量 ${fmtInt(
+      reorderQty
+    )}。${stockoutText}。`;
+  }
+
+  return `AI Analysis & Suggestions: ${risk.suggestion}. Lead-time demand is about ${fmtInt(
+    leadDemand
+  )}, suggested reorder is ${fmtInt(reorderQty)}. ${stockoutText}.`;
 }
 
 function normalizeSku(value: unknown) {
@@ -586,33 +621,136 @@ export default function Page() {
 
   // Risk assessment: compare current stock with safety stock and provide suggestions
   const risk = useMemo(() => {
-    if (currentStock >= safetyStock * 1.2) {
-      return { 
-        label: tt(TEXT.riskLow, lang), 
+    if (safetyStock <= 0) {
+      return {
+        label: tt(TEXT.riskLow, lang),
         desc: tt(TEXT.riskHealthy, lang),
-        suggestion: lang === "zh" ? "库存充足，建议维持当前水平" : "Stock is sufficient, maintain current level"
+        suggestion: lang === "zh" ? "未配置安全库存，暂按正常状态展示" : "Safety stock is not configured; shown as normal.",
+        tone: "green" as const,
       };
     }
-    if (currentStock >= safetyStock) {
-      return { 
-        label: tt(TEXT.riskMed, lang), 
-        desc: tt(TEXT.riskWatch, lang),
-        suggestion: lang === "zh" ? "库存正常，建议关注补货时机" : "Stock is normal, monitor reorder timing"
+    if (currentStock <= 0 || currentStock < safetyStock) {
+      return {
+        label: tt(TEXT.riskHigh, lang),
+        desc: lang === "zh" ? "过低库存（红色）" : "Low stock (Red)",
+        suggestion: lang === "zh" ? "库存低于安全库存，建议立即补货" : "Stock is below safety stock. Reorder now.",
+        tone: "red" as const,
       };
     }
-    if (currentStock >= safetyStock * 0.5) {
-      return { 
-        label: tt(TEXT.riskMed, lang), 
-        desc: tt(TEXT.riskWatch, lang),
-        suggestion: lang === "zh" ? "库存偏低，建议尽快补货" : "Stock is low, consider reordering soon"
+    if (currentStock >= safetyStock * 3) {
+      return {
+        label: tt(TEXT.riskHigh, lang),
+        desc: lang === "zh" ? "过高库存（红色）" : "Overstock x3 (Red)",
+        suggestion: lang === "zh" ? "库存已达安全库存3倍及以上，建议去库存" : "Stock is >= 3x safety. Start de-stocking actions.",
+        tone: "red" as const,
       };
     }
-    return { 
-      label: tt(TEXT.riskHigh, lang), 
-      desc: tt(TEXT.riskAtRisk, lang),
-      suggestion: lang === "zh" ? "库存严重不足，建议立即补货" : "Stock is critically low, reorder immediately"
+    if (currentStock >= safetyStock * 2.75) {
+      return {
+        label: tt(TEXT.riskMed, lang),
+        desc: lang === "zh" ? "高库存（黄色）x2.75" : "High stock x2.75 (Yellow)",
+        suggestion: lang === "zh" ? "库存接近过高阈值，建议控制补货节奏" : "Close to critical overstock; slow replenishment.",
+        tone: "yellow" as const,
+      };
+    }
+    if (currentStock > safetyStock * 1.1) {
+      return {
+        label: tt(TEXT.riskMed, lang),
+        desc: lang === "zh" ? "高于安全库存10%（黄色）" : "Above safety +10% (Yellow)",
+        suggestion: lang === "zh" ? "库存偏高，建议谨慎补货并加快消化" : "Stock is above target; replenish carefully.",
+        tone: "yellow" as const,
+      };
+    }
+    return {
+      label: tt(TEXT.riskLow, lang),
+      desc: tt(TEXT.riskHealthy, lang),
+      suggestion: lang === "zh" ? "库存处于目标区间，可维持当前策略" : "Stock is in target range; keep current strategy.",
+      tone: "green" as const,
     };
   }, [safetyStock, currentStock, lang]);
+
+  const [aiRiskInsight, setAiRiskInsight] = useState<string>("");
+  const [aiRiskLoading, setAiRiskLoading] = useState(false);
+  const [aiRiskError, setAiRiskError] = useState<string | null>(null);
+
+  const aiRiskFallback = useMemo(
+    () =>
+      buildRiskFallbackAdvice({
+        lang,
+        risk,
+        reorderQty,
+        leadDemand,
+        projectedStockoutMonth,
+      }),
+    [lang, risk, reorderQty, leadDemand, projectedStockoutMonth]
+  );
+
+  useEffect(() => {
+    if (!sku) return;
+
+    const timer = window.setTimeout(async () => {
+      setAiRiskLoading(true);
+      setAiRiskError(null);
+
+      try {
+        const question =
+          lang === "zh"
+            ? `请根据当前库存风险输出一句简短建议，以“AI 分析结果和建议：”开头，不超过120字。SKU=${sku}；风险=${risk.label}/${risk.desc}；当前库存=${currentStock}；安全库存=${safetyStock}；交期内需求=${leadDemand}；建议补货=${reorderQty}；预计缺货月=${projectedStockoutMonth ?? "无"}。`
+            : `Based on current inventory risk, return one short advice sentence starting with "AI Analysis & Suggestions:" (<=120 chars). SKU=${sku}; risk=${risk.label}/${risk.desc}; current_stock=${currentStock}; safety_stock=${safetyStock}; lead_demand=${leadDemand}; reorder=${reorderQty}; projected_stockout=${projectedStockoutMonth ?? "n/a"}.`;
+
+        const res = await fetch("/api/ai/forecast-advice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            question,
+            lang,
+            model: "gpt-4o-mini",
+            recentChat: [],
+            forecastSummary: {
+              sku,
+              model,
+              horizonMonths,
+              leadTimeMonths,
+              currentStock,
+              safetyStock,
+              leadDemand,
+              reorderQty,
+              projectedStockoutMonth,
+              risk,
+            },
+          }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(typeof data?.error === "string" ? data.error : "AI request failed");
+        }
+
+        const answer = typeof data?.answer === "string" ? data.answer.trim() : "";
+        setAiRiskInsight(answer || aiRiskFallback);
+      } catch (err) {
+        setAiRiskError(err instanceof Error ? err.message : "AI request failed");
+        setAiRiskInsight(aiRiskFallback);
+      } finally {
+        setAiRiskLoading(false);
+      }
+    }, 500);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    sku,
+    risk,
+    currentStock,
+    safetyStock,
+    leadDemand,
+    reorderQty,
+    projectedStockoutMonth,
+    lang,
+    model,
+    horizonMonths,
+    leadTimeMonths,
+    aiRiskFallback,
+  ]);
 
   const customerTypeDisplay = useMemo(
     () => (customerType === "普通" ? tt(TEXT.regular, lang) : tt(TEXT.keyAccount, lang)),
@@ -687,6 +825,53 @@ export default function Page() {
     });
     return items;
   }, [applicability]);
+
+  // Persist a compact summary for the home AI assistant.
+  useEffect(() => {
+    if (typeof window === "undefined" || !hasDemand) return;
+
+    const futureRows = chartRows.filter((r) => r.actual == null).slice(0, Math.max(1, horizonMonths));
+    const toModelSeries = (name: ModelKey) =>
+      futureRows
+        .map((r) => ({ month: r.t, value: Number((r as any)[name]) }))
+        .filter((x) => Number.isFinite(x.value));
+
+    const payload = {
+      sku,
+      model,
+      horizonMonths,
+      leadTimeMonths,
+      currentStock,
+      safetyStock,
+      leadDemand,
+      reorderQty,
+      projectedStockoutMonth,
+      risk,
+      models: (["NAIVE", "SNAIVE", "SMA", "SES", "HOLT", "HW"] as ModelKey[])
+        .filter((m) => chartApplicability[m]?.usable)
+        .map((m) => ({
+          name: m,
+          nextMonths: toModelSeries(m).slice(0, 6),
+        })),
+      generatedAt: new Date().toISOString(),
+    };
+
+    localStorage.setItem("ii:forecast:latest", JSON.stringify(payload));
+  }, [
+    hasDemand,
+    sku,
+    model,
+    horizonMonths,
+    leadTimeMonths,
+    currentStock,
+    safetyStock,
+    leadDemand,
+    reorderQty,
+    projectedStockoutMonth,
+    risk,
+    chartRows,
+    chartApplicability,
+  ]);
 
   return (
     <div className="max-w-7xl mx-auto py-6 px-4 space-y-4">
@@ -980,6 +1165,25 @@ export default function Page() {
             <div className="mt-3 text-xs text-slate-600 dark:text-slate-300">{risk.suggestion}</div>
             <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">{tt(TEXT.riskRule, lang)}</div>
           </div>
+
+          <div className="rounded-2xl border border-indigo-200/60 bg-indigo-50/70 p-4 shadow-sm dark:border-indigo-500/30 dark:bg-indigo-500/10">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-bold text-indigo-900 dark:text-indigo-200">
+                {tt(TEXT.aiRiskTitle, lang)}
+              </div>
+              <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-400/20 dark:text-indigo-200">
+                {tt(TEXT.aiRiskAuto, lang)}
+              </span>
+            </div>
+            <div className="mt-2 text-xs leading-relaxed text-indigo-900/90 dark:text-indigo-100/90">
+              {aiRiskLoading ? tt(TEXT.aiRiskLoading, lang) : aiRiskInsight || aiRiskFallback}
+            </div>
+            {aiRiskError && (
+              <div className="mt-2 text-[10px] text-indigo-700/80 dark:text-indigo-200/80">
+                {lang === "zh" ? "AI 服务暂不可用，已展示本地建议。" : "AI service unavailable, fallback suggestion shown."}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -1021,14 +1225,14 @@ function RiskKPI({
   risk,
 }: {
   title: string;
-  risk: { label: string; desc: string; suggestion: string };
+  risk: { label: string; desc: string; suggestion: string; tone: "green" | "yellow" | "red" };
 }) {
   const badgeColor =
-    risk.label.includes("LOW") || risk.label.includes("低")
-      ? "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300"
-      : risk.label.includes("HIGH") || risk.label.includes("高")
+    risk.tone === "red"
       ? "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300"
-      : "bg-yellow-50 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300";
+      : risk.tone === "yellow"
+      ? "bg-yellow-50 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300"
+      : "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300";
 
   return (
     <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">

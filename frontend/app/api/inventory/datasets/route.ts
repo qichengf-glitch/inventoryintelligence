@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { createSupabaseClient } from "@/lib/supabaseClient";
 import { getInventoryConfig } from "@/lib/inventoryConfig";
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
     const supabase = createSupabaseClient();
     const { schema, table, timeColumn } = getInventoryConfig();

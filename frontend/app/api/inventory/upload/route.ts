@@ -13,6 +13,7 @@ export async function POST(req: NextRequest) {
 
     const supabase = createSupabaseClient();
     const { schema, table, skuColumn, timeColumn, salesColumn, stockColumn } = getInventoryConfig();
+    const timeKey = timeColumn || "Time";
     const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
 
     // 从文件名提取月份（如果可能）
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
         month_end_inventory: item.monthEndInventory !== undefined ? cleanNumber(item.monthEndInventory) : cleanNumber(item.currentBalance),
         inventory_diff: cleanNumber(item.inventoryDiff),
         Remark: item.remark && item.remark !== "-" ? String(item.remark).trim() : null,
-        [timeColumn]: item.time || defaultTime,
+        [timeKey]: item.time || defaultTime,
       };
       return dbRow;
     });

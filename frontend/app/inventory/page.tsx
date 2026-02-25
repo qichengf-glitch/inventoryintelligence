@@ -385,13 +385,6 @@ export default function InventoryPage() {
     return matchesSearch && matchesCategory && matchesStatus;
   });
 
-  // 检查是否有有效的类别数据
-  const hasCategoryData = inventoryData.some(item => 
-    item.category && 
-    item.category.trim() !== "" && 
-    item.category !== "Uncategorized"
-  );
-
   return (
     <div className="max-w-7xl mx-auto py-6 px-4 space-y-6 relative">
       {notification && (

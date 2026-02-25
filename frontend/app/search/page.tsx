@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useRef } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
+import { type InventoryStatus } from "@/lib/inventoryStatus";
 
 type InventoryItem = {
   id: string;
@@ -13,17 +14,24 @@ type InventoryItem = {
 
   // 扩展字段（如果上传解析没映射，会为空）
   lastBalance?: number;     // 上月结存
+  inbound?: number;         // 本月入库
   outbound?: number;        // 本月领用
   sales?: number;           // 本月销售
   currentBalance: number;   // 本月结存（筛选/显示用）
   subtotal?: number;        // 小记
+  noteValue?: number;       // Note_value
   safetyStock?: number;     // 安全库存
   location?: string;        // 存放位置
   monthEndCount?: number;   // 月底盘存
+  monthEndInventory?: number; // month_end_inventory
   gainLoss?: number;        // 盘盈/亏
+  inventoryDiff?: number;   // inventory_diff
   note?: string;            // 备注
+  remark?: string;          // Remark
+  time?: string;            // Time
 
-  status: "Normal" | "Low" | "Out";
+  status: InventoryStatus;
+  raw?: Record<string, unknown>; // 保留原始行用于动态展示/导出
 };
 
 type SavedDataset = {
@@ -32,6 +40,7 @@ type SavedDataset = {
   rowCount: number;
   size: string;
   data: InventoryItem[];
+  month?: string;
 };
 
 type ParsedQuery = {
@@ -40,11 +49,22 @@ type ParsedQuery = {
   model?: string;
   batch?: string;
   category?: string;
-  status?: "Normal" | "Low" | "Out";
+  status?: InventoryStatus;
   month?: string;
   min?: number;
   max?: number;
 };
+
+const STATUS_VALUES: InventoryStatus[] = ["Out", "Low", "Overstock", "HighNearCritical", "High", "Normal"];
+
+const STATUS_LOOKUP = new Map<string, InventoryStatus>([
+  ...STATUS_VALUES.map((status) => [status.toLowerCase(), status] as const),
+  ["lowstock", "Low"],
+  ["outofstock", "Out"],
+  ["highstock", "High"],
+  ["high2.75", "HighNearCritical"],
+  ["over", "Overstock"],
+]);
 
 function parseQuery(input: string): ParsedQuery {
   const q = input.trim();
@@ -67,7 +87,11 @@ function parseQuery(input: string): ParsedQuery {
     else if (key === "model") out.model = val;
     else if (key === "batch") out.batch = val;
     else if (key === "category") out.category = val;
-    else if (key === "status" && (val === "Normal" || val === "Low" || val === "Out")) out.status = val;
+    else if (key === "status") {
+      const parsedStatus = STATUS_LOOKUP.get(val.toLowerCase());
+      if (parsedStatus) out.status = parsedStatus;
+      else rest.push(p);
+    }
     else if (key === "month") out.month = val;
     else if (key === "min") out.min = Number(val);
     else if (key === "max") out.max = Number(val);
@@ -102,6 +126,34 @@ function highlight(text: string, needle: string) {
   );
 }
 
+function downloadCsv(filename: string, rows: Array<Record<string, unknown>>) {
+  if (typeof window === "undefined") return;
+  if (!rows.length) return;
+  const headers = Array.from(
+    rows.reduce((set, row) => {
+      Object.keys(row).forEach((k) => set.add(k));
+      return set;
+    }, new Set<string>())
+  );
+  const escape = (v: unknown) => {
+    const s = v === null || v === undefined ? "" : String(v);
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const csv = [headers.join(",")]
+    .concat(rows.map((r) => headers.map((h) => escape((r as any)[h])).join(",")))
+    .join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename.endsWith(".csv") ? filename : `${filename}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export default function SearchClient() {
   const { lang } = useLanguage();
 
@@ -111,9 +163,10 @@ export default function SearchClient() {
   // Filters UI
   const [datasetScope, setDatasetScope] = useState<string>("ALL");
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
-  const [statusFilter, setStatusFilter] = useState<"ALL" | "Normal" | "Low" | "Out">("ALL");
+  const [statusFilter, setStatusFilter] = useState<"ALL" | InventoryStatus>("ALL");
   const [minBalance, setMinBalance] = useState<string>("");
   const [maxBalance, setMaxBalance] = useState<string>("");
+  const [currentPage, setCurrentPage] = useState(1);
 
   // ===== scroll sync refs =====
 const topScrollRef = useRef<HTMLDivElement | null>(null);
@@ -146,12 +199,30 @@ useEffect(() => {
   // Load datasets from localStorage
   const [datasets, setDatasets] = useState<SavedDataset[]>([]);
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem("inventory_datasets");
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) setDatasets(parsed as SavedDataset[]);
-    } catch {}
+    const loadAll = async () => {
+      try {
+        const res = await fetch("/api/inventory/all", { cache: "no-store" });
+        if (!res.ok) {
+          setDatasets([]);
+          return;
+        }
+        const data = await res.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        setDatasets([
+          {
+            fileName: "Supabase Database",
+            uploadDate: new Date().toISOString(),
+            rowCount: items.length,
+            size: `${Math.round(items.length * 0.5)} KB`,
+            data: items as InventoryItem[],
+            month: "ALL",
+          },
+        ]);
+      } catch {
+        setDatasets([]);
+      }
+    };
+    loadAll();
   }, []);
 
   // Flatten rows with dataset info
@@ -226,7 +297,22 @@ useEffect(() => {
       return true;
     });
 
-    const rank = (s: InventoryItem["status"]) => (s === "Out" ? 0 : s === "Low" ? 1 : 2);
+    const rank = (s: InventoryItem["status"]) => {
+      switch (s) {
+        case "Out":
+          return 0;
+        case "Low":
+          return 1;
+        case "Overstock":
+          return 2;
+        case "HighNearCritical":
+          return 3;
+        case "High":
+          return 4;
+        default:
+          return 5;
+      }
+    };
     res.sort((a, b) => {
       const r = rank(a.item.status) - rank(b.item.status);
       if (r !== 0) return r;
@@ -236,13 +322,115 @@ useEffect(() => {
     return res;
   }, [rows, parsed, effectiveCategory, effectiveStatus, effectiveMin, effectiveMax]);
 
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [query, datasetScope, categoryFilter, statusFilter, minBalance, maxBalance]);
+
   const summary = useMemo(() => {
     const total = results.length;
     const low = results.filter((r) => r.item.status === "Low").length;
     const out = results.filter((r) => r.item.status === "Out").length;
+    const high = results.filter((r) => r.item.status === "High").length;
+    const nearCritical = results.filter((r) => r.item.status === "HighNearCritical").length;
+    const overstock = results.filter((r) => r.item.status === "Overstock").length;
     const sumQty = results.reduce((acc, r) => acc + (Number(r.item.currentBalance) || 0), 0);
-    return { total, low, out, sumQty };
+    return { total, low, out, high, nearCritical, highTotal: high + nearCritical, overstock, sumQty };
   }, [results]);
+
+  const TEXT = {
+    title: { zh: "库存搜索", en: "Inventory Search" },
+    subtitle: { zh: "支持语法：sku: / category: / status: / batch: / min: / max: / month:", en: "Supported: sku: / category: / status: / batch: / min: / max: / month:" },
+    noData: {
+      zh: "还没有数据。请去「库存管理」上传文件并点击「保存到数据库」。",
+      en: "No data yet. Go to Inventory and upload, then click Save to Database.",
+    },
+    downloadFiltered: { zh: "下载筛选结果", en: "Download filtered" },
+    filters: { zh: "筛选", en: "Filters" },
+    dataset: { zh: "数据集", en: "Dataset" },
+    category: { zh: "类别", en: "Category" },
+    status: { zh: "状态", en: "Status" },
+    balanceRange: { zh: "结存范围（本月结存）", en: "Balance Range (Current)" },
+    reset: { zh: "重置", en: "Reset" },
+    results: { zh: "结果", en: "Results" },
+    active: { zh: "已应用筛选", en: "Active filters" },
+    model: { zh: "型号/SKU", en: "Model/SKU" },
+    batch: { zh: "批号", en: "Batch" },
+    from: { zh: "来源文件", en: "Dataset" },
+    showFirst: { zh: "为避免卡顿，仅显示前", en: "For performance, showing first" },
+    rows: { zh: "条", en: "rows" },
+  } as const;
+
+  // 动态列：基础顺序 + 原始字段
+  const baseColumns: Array<{ key: string; label: string }> = [
+    { key: "SKU", label: TEXT.model[lang] },
+    { key: "Batch", label: TEXT.batch[lang] },
+    { key: "Category", label: TEXT.category[lang] },
+    { key: "Last_Month_Stock", label: "Last_Month_Stock" },
+    { key: "month_in", label: "month_in" },
+    { key: "month_out", label: "month_out" },
+    { key: "month_sales", label: "month_sales" },
+    { key: "month_end_stock", label: "month_end_stock" },
+    { key: "Note_value", label: "Note_value" },
+    { key: "safety_stock", label: "safety_stock" },
+    { key: "Location", label: "Location" },
+    { key: "month_end_inventory", label: "month_end_inventory" },
+    { key: "inventory_diff", label: "inventory_diff" },
+    { key: "Remark", label: "Remark" },
+    { key: "Time", label: "Time" },
+    { key: "Status", label: TEXT.status[lang] },
+    { key: "Dataset", label: TEXT.from[lang] },
+  ];
+
+  const extraKeys = useMemo(() => {
+    const set = new Set<string>();
+    const sample = results.slice(0, 500); // 限制数量避免性能问题
+    sample.forEach(({ item }) => {
+      Object.keys(item.raw || {}).forEach((k) => {
+        if (!baseColumns.some((c) => c.key === k)) set.add(k);
+      });
+    });
+    return Array.from(set).sort();
+  }, [results]);
+
+  const displayColumns = useMemo(
+    () => baseColumns.concat(extraKeys.map((k) => ({ key: k, label: k }))),
+    [baseColumns, extraKeys]
+  );
+
+  const buildCsvRows = (cols: string[], source: typeof results) =>
+    source.map(({ ds, item }) => {
+      const row: Record<string, unknown> = {};
+      cols.forEach((key) => {
+        switch (key) {
+          case "SKU": row[key] = item.model; break;
+          case "Batch": row[key] = item.batch; break;
+          case "Category": row[key] = item.category; break;
+          case "Last_Month_Stock": row[key] = item.lastBalance; break;
+          case "month_in": row[key] = item.inbound; break;
+          case "month_out": row[key] = item.outbound; break;
+          case "month_sales": row[key] = item.sales; break;
+          case "month_end_stock": row[key] = item.currentBalance; break;
+          case "Note_value": row[key] = item.noteValue ?? item.currentBalance; break;
+          case "safety_stock": row[key] = item.safetyStock; break;
+          case "Location": row[key] = item.location; break;
+          case "month_end_inventory": row[key] = item.monthEndCount ?? item.monthEndInventory; break;
+          case "inventory_diff": row[key] = item.gainLoss ?? item.inventoryDiff; break;
+          case "Remark": row[key] = item.remark ?? item.note; break;
+          case "Time": row[key] = item.time; break;
+          case "Status": row[key] = item.status; break;
+          case "Dataset": row[key] = ds.fileName; break;
+          default:
+            row[key] = item.raw && key in item.raw ? (item.raw as any)[key] : undefined;
+        }
+      });
+      return row;
+    });
+
+  const handleDownloadFiltered = () => {
+    if (!results.length) return;
+    downloadCsv("inventory_filtered", buildCsvRows(displayColumns.map((c) => c.key), results));
+  };
+
 
   const activeFilters = useMemo(() => {
     const chips: string[] = [];
@@ -266,34 +454,47 @@ useEffect(() => {
     return "";
   }, [parsed.text, parsed.sku, parsed.model, parsed.batch, effectiveCategory]);
 
-  const limit = 300;
-  const shown = results.slice(0, limit);
+  const pageSize = 300;
+  const totalPages = Math.max(1, Math.ceil(results.length / pageSize));
+  const page = Math.min(currentPage, totalPages);
+  const shown = results.slice((page - 1) * pageSize, page * pageSize);
 
-  const TEXT = {
-    title: { zh: "库存搜索", en: "Inventory Search" },
-    subtitle: { zh: "支持语法：sku: / category: / status: / batch: / min: / max: / month:", en: "Supported: sku: / category: / status: / batch: / min: / max: / month:" },
-    noData: {
-      zh: "还没有数据。请去「库存管理」上传文件并点击「保存到数据库」。",
-      en: "No data yet. Go to Inventory and upload, then click Save to Database.",
-    },
-    filters: { zh: "筛选", en: "Filters" },
-    dataset: { zh: "数据集", en: "Dataset" },
-    category: { zh: "类别", en: "Category" },
-    status: { zh: "状态", en: "Status" },
-    balanceRange: { zh: "结存范围（本月结存）", en: "Balance Range (Current)" },
-    reset: { zh: "重置", en: "Reset" },
-    results: { zh: "结果", en: "Results" },
-    active: { zh: "已应用筛选", en: "Active filters" },
-    model: { zh: "型号/SKU", en: "Model/SKU" },
-    batch: { zh: "批号", en: "Batch" },
-    from: { zh: "来源文件", en: "Dataset" },
-    showFirst: { zh: "为避免卡顿，仅显示前", en: "For performance, showing first" },
-    rows: { zh: "条", en: "rows" },
-  } as const;
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
-  const statusLabel = (s: "Normal" | "Low" | "Out") => {
-    if (lang === "zh") return s === "Normal" ? "正常" : s === "Low" ? "缺货预警" : "已售罄";
-    return s === "Normal" ? "Normal" : s === "Low" ? "Low" : "Out";
+  const statusLabel = (s: InventoryStatus) => {
+    if (lang === "zh") {
+      if (s === "Normal") return "正常";
+      if (s === "Low") return "低于安全库存";
+      if (s === "Out") return "已售罄";
+      if (s === "High") return "高于安全库存10%";
+      if (s === "HighNearCritical") return "高于安全库存2.75倍";
+      return "过高库存(>=3倍)";
+    }
+    if (s === "Normal") return "Normal";
+    if (s === "Low") return "Below Safety Stock";
+    if (s === "Out") return "Out";
+    if (s === "High") return "Above Safety +10%";
+    if (s === "HighNearCritical") return "Above Safety x2.75";
+    return "Overstock (>=x3)";
+  };
+
+  const statusBadgeClass = (s: InventoryStatus) => {
+    const raw = String(s);
+    if (raw === "Overstock" || raw.toLowerCase().includes("overstock")) {
+      return "border-orange-300 bg-orange-500/30 text-orange-50";
+    }
+    if (raw === "Out") {
+      return "border-red-300 bg-red-500/35 text-red-50";
+    }
+    if (raw === "Low") {
+      return "border-yellow-300 bg-yellow-500/30 text-yellow-50";
+    }
+    if (raw === "High" || raw === "HighNearCritical" || raw.toLowerCase().includes("high")) {
+      return "border-emerald-300 bg-emerald-500/30 text-emerald-50";
+    }
+    return "border-emerald-300 bg-emerald-500/30 text-emerald-50";
   };
 
   return (
@@ -309,7 +510,7 @@ useEffect(() => {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={lang === "zh" ? '例如：sku:FWD111 category:xxx status:Low min:0 max:50 month:2025-03' : "e.g. sku:FWD111 category:xxx status:Low min:0 max:50 month:2025-03"}
+            placeholder={lang === "zh" ? '例如：sku:FWD111 category:xxx status:Low status:High min:0 max:50 month:2025-03' : "e.g. sku:FWD111 category:xxx status:Low status:High min:0 max:50 month:2025-03"}
             className="w-full bg-transparent outline-none text-base px-2 py-3"
             onKeyDown={(e) => e.key === "Enter" && setQuery((v) => v)}
           />
@@ -320,7 +521,7 @@ useEffect(() => {
 
         {/* Quick chips */}
         <div className="mt-3 flex flex-wrap gap-2 text-sm">
-          {["status:Low", "status:Out", "min:0", "max:50", "month:2025-03"].map((s) => (
+          {["status:Low", "status:High", "status:Overstock", "min:0", "max:50", "month:2025-03"].map((s) => (
             <button
               key={s}
               className="rounded-full border border-white/10 bg-white/5 px-3 py-1 hover:bg-white/10"
@@ -373,13 +574,15 @@ useEffect(() => {
               <label className="block text-xs font-bold opacity-70 mb-1">{TEXT.status[lang]}</label>
               <select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as "ALL" | "Normal" | "Low" | "Out")}
+                onChange={(e) => setStatusFilter(e.target.value as "ALL" | InventoryStatus)}
                 className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm outline-none"
               >
                 <option value="ALL">{lang === "zh" ? "全部" : "All"}</option>
-                <option value="Normal">{statusLabel("Normal")}</option>
-                <option value="Low">{statusLabel("Low")}</option>
-                <option value="Out">{statusLabel("Out")}</option>
+                {STATUS_VALUES.map((status) => (
+                  <option key={status} value={status}>
+                    {statusLabel(status)}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -423,22 +626,38 @@ useEffect(() => {
         </aside>
 
         {/* Results */}
+        <div className="space-y-3">
         <main className="rounded-2xl border border-white/10 bg-white/5 overflow-hidden">
           <div className="px-5 py-4 border-b border-white/10">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="font-bold">
                 {TEXT.results[lang]} <span className="opacity-70 text-sm">({summary.total})</span>
               </div>
-              <div className="flex flex-wrap gap-2 text-xs">
-                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">
-                  Low: <b>{summary.low}</b>
-                </span>
-                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">
-                  Out: <b>{summary.out}</b>
-                </span>
-                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1">
-                  {lang === "zh" ? "结存合计" : "Qty sum"}: <b>{summary.sumQty}</b>
-                </span>
+              <div className="flex flex-wrap gap-2 items-center">
+                <div className="flex flex-wrap gap-2 text-xs rounded-xl border border-white/10 bg-white/[0.03] px-2 py-2">
+                  <span className="rounded-full border border-yellow-400/60 bg-yellow-500/20 px-3 py-1.5 text-yellow-100">
+                    Low: <b>{summary.low}</b>
+                  </span>
+                  <span className="rounded-full border border-red-400/70 bg-red-500/25 px-3 py-1.5 text-red-100">
+                    Out: <b>{summary.out}</b>
+                  </span>
+                  <span className="rounded-full border border-emerald-400/60 bg-emerald-500/20 px-3 py-1.5 text-emerald-100">
+                    High(1.1x~2.99x): <b>{summary.highTotal}</b>
+                  </span>
+                  <span className="rounded-full border border-orange-400/70 bg-orange-500/25 px-3 py-1.5 text-orange-100">
+                    Overstock(x3): <b>{summary.overstock}</b>
+                  </span>
+                  <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-slate-100">
+                    {lang === "zh" ? "结存合计" : "Qty sum"}: <b>{summary.sumQty}</b>
+                  </span>
+                </div>
+                <button
+                  onClick={handleDownloadFiltered}
+                  disabled={!results.length}
+                  className="shrink-0 rounded-full px-4 py-2 text-sm font-semibold shadow-sm transition-all border border-blue-400/50 text-white bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-500 hover:to-blue-500 active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {TEXT.downloadFiltered[lang]}
+                </button>
               </div>
             </div>
 
@@ -460,112 +679,121 @@ useEffect(() => {
 
           {datasets.length === 0 ? (
             <div className="px-5 py-10 opacity-75">{TEXT.noData[lang]}</div>
-        ) : (
+          ) : (
             <div className="overflow-hidden">
               {/* 顶部可拖动横向 bar */}
               <div
                 ref={topScrollRef}
                 className="scrollbar-nice overflow-x-auto overflow-y-hidden border-b border-white/10"
               >
-                {/* 只用于制造顶部滚动条的宽度，先写死即可 */}
                 <div className="h-3" style={{ width: "2600px" }} />
               </div>
-          
-              {/* 表格滚动区域：横向 + 纵向（右侧会出现可拖动竖向 bar） */}
-              <div
-                ref={tableScrollRef}
-                className="scrollbar-nice max-h-[70vh] overflow-auto"
-              >
+
+              {/* 表格滚动区域 */}
+              <div ref={tableScrollRef} className="scrollbar-nice max-h-[70vh] overflow-auto">
                 <table className="min-w-max w-full text-sm text-left">
                   <thead className="bg-white/5 border-b border-white/10 uppercase tracking-wider opacity-80 sticky top-0 z-20">
                     <tr>
-                      <th className="px-5 py-3 font-bold">{TEXT.model[lang]}</th>
-                      <th className="px-5 py-3 font-bold">{TEXT.batch[lang]}</th>
-                      <th className="px-5 py-3 font-bold">{TEXT.category[lang]}</th>
-          
-                      <th className="px-5 py-3 font-bold text-right">上月结存</th>
-                      <th className="px-5 py-3 font-bold text-right">本月领用</th>
-                      <th className="px-5 py-3 font-bold text-right">本月销售</th>
-                      <th className="px-5 py-3 font-bold text-right">本月结存</th>
-          
-                      <th className="px-5 py-3 font-bold text-right">小记</th>
-                      <th className="px-5 py-3 font-bold text-right">安全库存</th>
-                      <th className="px-5 py-3 font-bold">存放位置</th>
-                      <th className="px-5 py-3 font-bold text-right">月底盘存</th>
-                      <th className="px-5 py-3 font-bold text-right">盘盈/亏</th>
-          
-                      <th className="px-5 py-3 font-bold text-center">{TEXT.status[lang]}</th>
-                      <th className="px-5 py-3 font-bold">{TEXT.from[lang]}</th>
-                      <th className="px-5 py-3 font-bold">备注</th>
+                      {displayColumns.map((col) => (
+                        <th key={col.key} className="px-5 py-3 font-bold text-right first:text-left first:pl-5 last:pr-5">
+                          {col.label}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
-          
+
                   <tbody className="divide-y divide-white/10">
                     {shown.map(({ ds, item }) => (
                       <tr key={`${ds.fileName}-${item.id}`} className="hover:bg-white/5">
-                        <td className="px-5 py-3 font-semibold">
-                          {highlight(item.model, keywordForHighlight)}
-                        </td>
-                        <td className="px-5 py-3 opacity-80">
-                          {highlight(item.batch, keywordForHighlight)}
-                        </td>
-                        <td className="px-5 py-3 opacity-80">
-                          {highlight(item.category, keywordForHighlight)}
-                        </td>
-          
-                        <td className="px-5 py-3 text-right">{item.lastBalance ?? ""}</td>
-                        <td className="px-5 py-3 text-right">{item.outbound ?? ""}</td>
-                        <td className="px-5 py-3 text-right">{item.sales ?? ""}</td>
-                        <td className="px-5 py-3 text-right font-bold">{item.currentBalance}</td>
-          
-                        <td className="px-5 py-3 text-right">{item.subtotal ?? ""}</td>
-                        <td className="px-5 py-3 text-right">{item.safetyStock ?? ""}</td>
-                        <td className="px-5 py-3 opacity-80">{item.location ?? ""}</td>
-                        <td className="px-5 py-3 text-right">{item.monthEndCount ?? ""}</td>
-                        <td className="px-5 py-3 text-right">{item.gainLoss ?? ""}</td>
-          
-                        <td className="px-5 py-3 text-center">
-                          <span
-                            className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold border ${
-                              item.status === "Normal"
-                                ? "bg-green-900/30 text-green-300 border-green-800"
-                                : item.status === "Low"
-                                ? "bg-yellow-900/30 text-yellow-300 border-yellow-800"
-                                : "bg-red-900/30 text-red-300 border-red-800"
-                            }`}
-                          >
-                            {statusLabel(item.status)}
-                          </span>
-                        </td>
-          
-                        <td className="px-5 py-3 opacity-70">
-                          {highlight(ds.fileName, keywordForHighlight)}
-                        </td>
-                        <td className="px-5 py-3 opacity-70">{item.note ?? ""}</td>
+                        {displayColumns.map((col, idx) => {
+                          const key = col.key;
+                          let val: unknown;
+                          switch (key) {
+                            case "SKU": val = item.model; break;
+                            case "Batch": val = item.batch; break;
+                            case "Category": val = item.category; break;
+                            case "Last_Month_Stock": val = item.lastBalance; break;
+                            case "month_in": val = item.inbound; break;
+                            case "month_out": val = item.outbound; break;
+                            case "month_sales": val = item.sales; break;
+                            case "month_end_stock": val = item.currentBalance; break;
+                            case "Note_value": val = item.noteValue ?? item.subtotal; break;
+                            case "safety_stock": val = item.safetyStock; break;
+                            case "Location": val = item.location; break;
+                            case "month_end_inventory": val = item.monthEndCount ?? item.monthEndInventory; break;
+                            case "inventory_diff": val = item.gainLoss ?? item.inventoryDiff; break;
+                            case "Remark": val = item.remark ?? item.note; break;
+                            case "Time": val = item.time; break;
+                            case "Status": val = item.status; break;
+                            case "Dataset": val = ds.fileName; break;
+                            default:
+                              val = item.raw && key in (item.raw as any) ? (item.raw as any)[key] : "";
+                          }
+                          const isNumeric = typeof val === "number";
+                          const isStatusColumn = key === "Status";
+                          const content = isStatusColumn ? (
+                            <span className={`inline-flex rounded-full border px-2 py-1 text-xs font-bold shadow-sm ${statusBadgeClass(item.status)}`}>
+                              {statusLabel(item.status)}
+                            </span>
+                          ) : idx === 0 ? (
+                            highlight(String(val ?? ""), keywordForHighlight)
+                          ) : (
+                            String(val ?? "")
+                          );
+                          return (
+                            <td
+                              key={key}
+                              className={`px-5 py-3 ${idx === 0 ? "font-semibold" : key === "Status" ? "" : "opacity-80"} ${isNumeric ? "text-right font-mono" : ""}`}
+                            >
+                              {content}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
-          
+
                     {shown.length === 0 && (
                       <tr>
-                        <td className="px-5 py-10 opacity-70" colSpan={15}>
+                        <td className="px-5 py-10 opacity-70" colSpan={displayColumns.length}>
                           {lang === "zh"
-                            ? "没有匹配结果。试试：status:Low 或 category:xxx 或 min:0 max:50"
-                            : "No results. Try: status:Low, category:xxx, min:0 max:50"}
+                            ? "没有匹配结果。试试：status:Low / status:High / status:Overstock 或 category:xxx"
+                            : "No results. Try: status:Low / status:High / status:Overstock or category:xxx"}
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
-          
-                {results.length > limit && (
-                  <div className="px-5 py-3 text-xs opacity-60 border-t border-white/10">
-                    {TEXT.showFirst[lang]} {limit} {TEXT.rows[lang]}
-                  </div>
-                )}
+
               </div>
             </div>
           )}
         </main>
+        {results.length > pageSize && (
+          <div className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 flex items-center justify-between gap-3">
+            <div className="text-xs opacity-70">
+              {lang === "zh"
+                ? `第 ${page} / ${totalPages} 页（每页 ${pageSize} 条）`
+                : `Page ${page} / ${totalPages} (${pageSize} rows per page)`}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {lang === "zh" ? "上一页" : "Prev"}
+              </button>
+              <button
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="rounded-lg border border-white/15 px-3 py-1.5 text-xs hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {lang === "zh" ? "下一页" : "Next"}
+              </button>
+            </div>
+          </div>
+        )}
+        </div>
       </div>
     </div>
   );
