@@ -2,10 +2,13 @@
   "name": "inventory-intelligence",
   "private": true,
   "description": "Inventory Intelligence - frontend lives in ./frontend",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
-    "dev": "cd frontend && npm run dev",
-    "build": "cd frontend && npm run build",
-    "start": "cd frontend && npm run start",
-    "lint": "cd frontend && npm run lint"
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend ci && npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start",
+    "lint": "npm --prefix frontend run lint"
   }
 }
