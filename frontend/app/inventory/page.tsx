@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useLanguage } from "@/components/LanguageProvider";
 import * as XLSX from "xlsx"; // 引入强大的解析库
 
@@ -43,6 +44,7 @@ const TEXT = {
 
 export default function InventoryPage() {
   const { lang } = useLanguage();
+  const router = useRouter();
   const [inventoryData, setInventoryData] = useState<InventoryItem[]>(INITIAL_DATA);
   const [notification, setNotification] = useState<string | null>(null);
   const [currentFileName, setCurrentFileName] = useState<string>("");
@@ -365,6 +367,7 @@ export default function InventoryPage() {
           ? `✅ 成功保存 ${result.inserted || result.total || inventoryData.length} 条数据到数据库！`
           : `✅ Successfully saved ${result.inserted || result.total || inventoryData.length} rows to database!`
       );
+      router.refresh();
       setTimeout(() => setNotification(null), 3000);
     } catch (error) {
       console.error("Save error:", error);

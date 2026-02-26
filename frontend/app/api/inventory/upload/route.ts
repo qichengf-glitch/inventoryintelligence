@@ -13,6 +13,7 @@ type MonthlyRow = {
   month_out: number;
   month_sales: number;
   month_end_stock: number;
+  safety_stock: number;
   note_value: number;
   remark: string | null;
 };
@@ -77,6 +78,13 @@ function hasUsableSku(sku: string): boolean {
   return true;
 }
 
+function classifyDashboardStatus(totalStock: number, safetyStock: number) {
+  if (totalStock <= 0) return "out_of_stock" as const;
+  if (safetyStock > 0 && totalStock <= safetyStock) return "low_stock" as const;
+  if (safetyStock > 0 && totalStock >= safetyStock * 3) return "over_stock" as const;
+  return "normal_stock" as const;
+}
+
 async function deleteByFileName(
   getTable: (tableName: string) => any,
   originalFileName: string
@@ -116,6 +124,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const { rows, fileName } = body as { rows?: UploadRow[]; fileName?: string };
+    const warnings: string[] = [];
 
     if (!rows || !Array.isArray(rows) || rows.length === 0) {
       return NextResponse.json({ error: "No data to save" }, { status: 400 });
@@ -127,6 +136,11 @@ export async function POST(req: NextRequest) {
       schema ? supabase.schema(schema).from(tableName) : supabase.from(tableName);
 
     const normalizedFileName = String(fileName || "manual_upload.xlsx").trim() || "manual_upload.xlsx";
+    console.log("[api/inventory/upload] start", {
+      fileName: normalizedFileName,
+      inputRows: rows.length,
+      schema: schema || "public",
+    });
 
     // Same file name => hard overwrite old data before inserting the new version.
     await deleteByFileName(getTable, normalizedFileName);
@@ -147,6 +161,7 @@ export async function POST(req: NextRequest) {
           month_out: toNumber(item.outbound),
           month_sales: toNumber(item.sales),
           month_end_stock: toNumber(item.currentBalance),
+          safety_stock: toNumber(item.safetyStock),
           note_value:
             item.noteValue !== undefined
               ? toNumber(item.noteValue)
@@ -277,14 +292,74 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // Dashboard monthly summary (upsert) for KPI/cards in Home.
+      const skuSnapshot = new Map<string, { stock: number; safety: number }>();
+      for (const row of monthRows) {
+        const entry = skuSnapshot.get(row.sku) ?? { stock: 0, safety: 0 };
+        entry.stock += row.month_end_stock;
+        entry.safety = Math.max(entry.safety, row.safety_stock);
+        skuSnapshot.set(row.sku, entry);
+      }
+
+      let lowStockCount = 0;
+      let outOfStockCount = 0;
+      let overStockCount = 0;
+      let normalStockCount = 0;
+      let totalStock = 0;
+
+      for (const stat of skuSnapshot.values()) {
+        totalStock += stat.stock;
+        const status = classifyDashboardStatus(stat.stock, stat.safety);
+        if (status === "low_stock") lowStockCount += 1;
+        else if (status === "out_of_stock") outOfStockCount += 1;
+        else if (status === "over_stock") overStockCount += 1;
+        else normalStockCount += 1;
+      }
+
+      const skuCount = skuSnapshot.size;
+      const riskSkuCount = lowStockCount + outOfStockCount;
+
+      const dashboardSummaryRes = await getTable("dashboard_monthly_summary").upsert(
+        {
+          month: monthDate,
+          sku_count: skuCount,
+          total_stock: Math.round(totalStock * 10000) / 10000,
+          risk_sku_count: riskSkuCount,
+          low_stock_count: lowStockCount,
+          out_of_stock_count: outOfStockCount,
+          over_stock_count: overStockCount,
+          normal_stock_count: normalStockCount,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "month" }
+      );
+      if (dashboardSummaryRes.error) {
+        const message = dashboardSummaryRes.error.message || "dashboard_monthly_summary upsert failed";
+        if (dashboardSummaryRes.error.code === "42P01" || dashboardSummaryRes.error.code === "PGRST205") {
+          warnings.push("dashboard_monthly_summary table is missing");
+          console.warn("[api/inventory/upload] dashboard summary table missing");
+        } else {
+          warnings.push(`dashboard summary upsert warning: ${message}`);
+          console.warn("[api/inventory/upload] dashboard summary upsert warning:", message);
+        }
+      }
+
       insertedTotal += monthRows.length;
     }
+
+    console.log("[api/inventory/upload] completed", {
+      insertedTotal,
+      normalizedRows: normalizedRows.length,
+      months: rowsByMonth.size,
+      warningsCount: warnings.length,
+    });
 
     return NextResponse.json({
       success: true,
       inserted: insertedTotal,
       total: normalizedRows.length,
       months: rowsByMonth.size,
+      warnings,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown server error";
