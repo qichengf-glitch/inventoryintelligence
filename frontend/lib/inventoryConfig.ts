@@ -14,14 +14,39 @@ const normalize = (value?: string) => {
 };
 
 export function getInventoryConfig(): InventoryConfig {
+  const rawTable = normalize(process.env.INVENTORY_TABLE);
+  const resolvedTable =
+    !rawTable || rawTable.toLowerCase() === "summary"
+      ? "inventory_monthly"
+      : rawTable;
+
+  const rawSkuColumn = normalize(process.env.INVENTORY_SKU_COLUMN);
+  const rawTimeColumn = normalize(process.env.INVENTORY_TIME_COLUMN);
+  const rawMonthColumn = normalize(process.env.INVENTORY_MONTH_COLUMN);
+  const rawSalesColumn = normalize(process.env.INVENTORY_SALES_COLUMN);
+  const rawStockColumn = normalize(process.env.INVENTORY_STOCK_COLUMN);
+
+  const monthlyMode = resolvedTable.toLowerCase() === "inventory_monthly";
+  const skuColumn =
+    monthlyMode && (!rawSkuColumn || rawSkuColumn.toLowerCase() === "sku")
+      ? "sku"
+      : rawSkuColumn ?? "sku";
+  const timeColumn =
+    monthlyMode &&
+    (!rawTimeColumn ||
+      rawTimeColumn.toLowerCase() === "time" ||
+      rawTimeColumn.toLowerCase() === "month")
+      ? "month"
+      : rawTimeColumn ?? rawMonthColumn ?? "month";
+
   return {
     schema: normalize(process.env.INVENTORY_SCHEMA),
-    table: normalize(process.env.INVENTORY_TABLE) ?? "summary",
-    skuColumn: normalize(process.env.INVENTORY_SKU_COLUMN) ?? "SKU",
-    monthColumn: normalize(process.env.INVENTORY_MONTH_COLUMN),
-    timeColumn: normalize(process.env.INVENTORY_TIME_COLUMN) ?? "Time",
-    salesColumn: normalize(process.env.INVENTORY_SALES_COLUMN) ?? "month_sales",
-    stockColumn: normalize(process.env.INVENTORY_STOCK_COLUMN) ?? "month_end_stock",
+    table: resolvedTable,
+    skuColumn,
+    monthColumn: rawMonthColumn ?? timeColumn,
+    timeColumn,
+    salesColumn: rawSalesColumn ?? "month_sales",
+    stockColumn: rawStockColumn ?? "month_end_stock",
   };
 }
 

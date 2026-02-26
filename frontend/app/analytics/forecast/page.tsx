@@ -105,6 +105,17 @@ const TEXT = {
   aiRiskTitle: { zh: "AI 分析结果和建议", en: "AI Analysis & Suggestions" },
   aiRiskLoading: { zh: "AI 正在分析当前风险与补货参数...", en: "AI is analyzing current risk and replenishment signals..." },
   aiRiskAuto: { zh: "自动生成", en: "Auto-generated" },
+  aiRiskMiniChat: { zh: "小聊天", en: "Mini Chat" },
+  aiRiskAsk: { zh: "发送", en: "Send" },
+  aiRiskAsking: { zh: "发送中...", en: "Sending..." },
+  aiRiskInputPlaceholder: {
+    zh: "继续追问（如：为什么建议不补货？）",
+    en: "Ask a follow-up (e.g. Why no reorder?)",
+  },
+  aiRiskChatFallback: {
+    zh: "AI 暂不可用，请稍后重试。",
+    en: "AI is temporarily unavailable. Please try again.",
+  },
 };
 
 // -------------------- Helpers --------------------
@@ -341,6 +352,18 @@ type ChartRow = {
   HW?: number;
 };
 
+type ForecastModelSeries = {
+  name: ModelKey;
+  nextMonths: Array<{ month: string; value: number }>;
+};
+
+type ModelBlendSummary = {
+  leadDemandByModel: Array<{ name: ModelKey; leadDemand: number }>;
+  medianLeadDemand: number;
+  minLeadDemand: number;
+  maxLeadDemand: number;
+};
+
 function buildMultiModelChartData(history: DemandPoint[], horizonMonths: number) {
   if (!history.length) {
     return { rows: [], forecastStartDate: "-", applicability: modelApplicability(0) };
@@ -376,6 +399,46 @@ function buildMultiModelChartData(history: DemandPoint[], horizonMonths: number)
   }
 
   return { rows, forecastStartDate, applicability };
+}
+
+function buildModelSnapshot(history: DemandPoint[], horizonMonths: number, leadTimeMonths: number): {
+  models: ForecastModelSeries[];
+  modelBlend: ModelBlendSummary;
+} {
+  const { rows, applicability } = buildMultiModelChartData(history, horizonMonths);
+  const futureRows = rows.filter((r) => r.actual == null).slice(0, Math.max(1, horizonMonths));
+  const modelKeys = (["NAIVE", "SNAIVE", "SMA", "SES", "HOLT", "HW"] as ModelKey[]).filter(
+    (m) => applicability[m]?.usable
+  );
+
+  const models = modelKeys.map((m) => ({
+    name: m,
+    nextMonths: futureRows
+      .map((r) => ({ month: r.t, value: Number((r as any)[m]) }))
+      .filter((x) => Number.isFinite(x.value)),
+  }));
+
+  const lt = clamp(leadTimeMonths, 1, 12);
+  const leadDemandByModel = models.map((m) => ({
+    name: m.name as ModelKey,
+    leadDemand: Math.round(m.nextMonths.slice(0, lt).reduce((sum, p) => sum + Number(p.value || 0), 0)),
+  }));
+  const leadVals = leadDemandByModel.map((x) => x.leadDemand).sort((a, b) => a - b);
+  const medianLeadDemand =
+    leadVals.length === 0
+      ? 0
+      : leadVals.length % 2 === 1
+      ? leadVals[(leadVals.length - 1) / 2]
+      : Math.round((leadVals[leadVals.length / 2 - 1] + leadVals[leadVals.length / 2]) / 2);
+
+  const modelBlend: ModelBlendSummary = {
+    leadDemandByModel,
+    medianLeadDemand,
+    minLeadDemand: leadVals.length ? leadVals[0] : 0,
+    maxLeadDemand: leadVals.length ? leadVals[leadVals.length - 1] : 0,
+  };
+
+  return { models, modelBlend };
 }
 
 // -------------------- Range (months) --------------------
@@ -672,6 +735,10 @@ export default function Page() {
   const [aiRiskInsight, setAiRiskInsight] = useState<string>("");
   const [aiRiskLoading, setAiRiskLoading] = useState(false);
   const [aiRiskError, setAiRiskError] = useState<string | null>(null);
+  const [aiChatMessages, setAiChatMessages] = useState<Array<{ role: "user" | "assistant"; text: string }>>([]);
+  const [aiChatInput, setAiChatInput] = useState("");
+  const [aiChatLoading, setAiChatLoading] = useState(false);
+  const [aiChatError, setAiChatError] = useState<string | null>(null);
 
   const aiRiskFallback = useMemo(
     () =>
@@ -693,10 +760,11 @@ export default function Page() {
       setAiRiskError(null);
 
       try {
+        const multiModelSnapshot = buildModelSnapshot(demandHistory, horizonMonths, leadTimeMonths);
         const question =
           lang === "zh"
-            ? `请根据当前库存风险输出一句简短建议，以“AI 分析结果和建议：”开头，不超过120字。SKU=${sku}；风险=${risk.label}/${risk.desc}；当前库存=${currentStock}；安全库存=${safetyStock}；交期内需求=${leadDemand}；建议补货=${reorderQty}；预计缺货月=${projectedStockoutMonth ?? "无"}。`
-            : `Based on current inventory risk, return one short advice sentence starting with "AI Analysis & Suggestions:" (<=120 chars). SKU=${sku}; risk=${risk.label}/${risk.desc}; current_stock=${currentStock}; safety_stock=${safetyStock}; lead_demand=${leadDemand}; reorder=${reorderQty}; projected_stockout=${projectedStockoutMonth ?? "n/a"}.`;
+            ? `请综合所有可用预测模型（NAIVE/SNAIVE/SMA/SES/HOLT/HW）后输出一句简短建议，以“AI 分析结果和建议：”开头，不超过120字。SKU=${sku}；风险=${risk.label}/${risk.desc}；当前库存=${currentStock}；安全库存=${safetyStock}；交期内需求=${leadDemand}；建议补货=${reorderQty}；预计缺货月=${projectedStockoutMonth ?? "无"}。`
+            : `Synthesize all available forecasting models (NAIVE/SNAIVE/SMA/SES/HOLT/HW) and return one short advice sentence starting with "AI Analysis & Suggestions:" (<=120 chars). SKU=${sku}; risk=${risk.label}/${risk.desc}; current_stock=${currentStock}; safety_stock=${safetyStock}; lead_demand=${leadDemand}; reorder=${reorderQty}; projected_stockout=${projectedStockoutMonth ?? "n/a"}.`;
 
         const res = await fetch("/api/ai/forecast-advice", {
           method: "POST",
@@ -717,6 +785,8 @@ export default function Page() {
               reorderQty,
               projectedStockoutMonth,
               risk,
+              models: multiModelSnapshot.models,
+              modelBlend: multiModelSnapshot.modelBlend,
             },
           }),
         });
@@ -745,12 +815,76 @@ export default function Page() {
     leadDemand,
     reorderQty,
     projectedStockoutMonth,
+    demandHistory,
     lang,
     model,
     horizonMonths,
     leadTimeMonths,
     aiRiskFallback,
   ]);
+
+  const handleMiniChatAsk = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const prompt = aiChatInput.trim();
+    if (!prompt || !sku || aiChatLoading) return;
+
+    setAiChatInput("");
+    setAiChatLoading(true);
+    setAiChatError(null);
+    setAiChatMessages((prev) => [...prev, { role: "user", text: prompt }]);
+
+    try {
+      const multiModelSnapshot = buildModelSnapshot(demandHistory, horizonMonths, leadTimeMonths);
+      const recentChat = [
+        ...(aiRiskInsight ? [{ role: "assistant" as const, text: aiRiskInsight }] : []),
+        ...aiChatMessages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
+        { role: "user" as const, text: prompt },
+      ];
+
+      const res = await fetch("/api/ai/forecast-advice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: "forecast",
+          question: prompt,
+          lang,
+          model: "gpt-4o-mini",
+          recentChat,
+          forecastSummary: {
+            sku,
+            model,
+            horizonMonths,
+            leadTimeMonths,
+            currentStock,
+            safetyStock,
+            leadDemand,
+            reorderQty,
+            projectedStockoutMonth,
+            risk,
+            models: multiModelSnapshot.models,
+            modelBlend: multiModelSnapshot.modelBlend,
+          },
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(typeof data?.error === "string" ? data.error : "AI request failed");
+      }
+
+      const answer =
+        typeof data?.answer === "string" && data.answer.trim()
+          ? data.answer.trim()
+          : tt(TEXT.aiRiskChatFallback, lang);
+      setAiChatMessages((prev) => [...prev, { role: "assistant", text: answer }]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "AI request failed";
+      setAiChatError(message);
+      setAiChatMessages((prev) => [...prev, { role: "assistant", text: tt(TEXT.aiRiskChatFallback, lang) }]);
+    } finally {
+      setAiChatLoading(false);
+    }
+  };
 
   const customerTypeDisplay = useMemo(
     () => (customerType === "普通" ? tt(TEXT.regular, lang) : tt(TEXT.keyAccount, lang)),
@@ -830,11 +964,7 @@ export default function Page() {
   useEffect(() => {
     if (typeof window === "undefined" || !hasDemand) return;
 
-    const futureRows = chartRows.filter((r) => r.actual == null).slice(0, Math.max(1, horizonMonths));
-    const toModelSeries = (name: ModelKey) =>
-      futureRows
-        .map((r) => ({ month: r.t, value: Number((r as any)[name]) }))
-        .filter((x) => Number.isFinite(x.value));
+    const multiModelSnapshot = buildModelSnapshot(demandHistory, horizonMonths, leadTimeMonths);
 
     const payload = {
       sku,
@@ -847,12 +977,11 @@ export default function Page() {
       reorderQty,
       projectedStockoutMonth,
       risk,
-      models: (["NAIVE", "SNAIVE", "SMA", "SES", "HOLT", "HW"] as ModelKey[])
-        .filter((m) => chartApplicability[m]?.usable)
-        .map((m) => ({
-          name: m,
-          nextMonths: toModelSeries(m).slice(0, 6),
-        })),
+      models: multiModelSnapshot.models.map((m) => ({
+        name: m.name,
+        nextMonths: m.nextMonths.slice(0, 6),
+      })),
+      modelBlend: multiModelSnapshot.modelBlend,
       generatedAt: new Date().toISOString(),
     };
 
@@ -871,6 +1000,7 @@ export default function Page() {
     risk,
     chartRows,
     chartApplicability,
+    demandHistory,
   ]);
 
   return (
@@ -1156,33 +1286,65 @@ export default function Page() {
 
         {/* Right */}
         <div className="space-y-3">
-          <div className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4">
-            <div className="text-sm font-bold text-slate-900 dark:text-white">{tt(TEXT.riskTitle, lang)}</div>
-            <div className="mt-2 flex items-end justify-between">
-              <div className="text-3xl font-extrabold text-slate-900 dark:text-white">{risk.label}</div>
-              <div className="text-xs text-slate-600 dark:text-slate-300">{risk.desc}</div>
-            </div>
-            <div className="mt-3 text-xs text-slate-600 dark:text-slate-300">{risk.suggestion}</div>
-            <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">{tt(TEXT.riskRule, lang)}</div>
-          </div>
-
           <div className="rounded-2xl border border-indigo-200/60 bg-indigo-50/70 p-4 shadow-sm dark:border-indigo-500/30 dark:bg-indigo-500/10">
             <div className="flex items-center justify-between gap-2">
               <div className="text-sm font-bold text-indigo-900 dark:text-indigo-200">
                 {tt(TEXT.aiRiskTitle, lang)}
               </div>
               <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-400/20 dark:text-indigo-200">
-                {tt(TEXT.aiRiskAuto, lang)}
+                {tt(TEXT.aiRiskMiniChat, lang)}
               </span>
             </div>
             <div className="mt-2 text-xs leading-relaxed text-indigo-900/90 dark:text-indigo-100/90">
               {aiRiskLoading ? tt(TEXT.aiRiskLoading, lang) : aiRiskInsight || aiRiskFallback}
             </div>
-            {aiRiskError && (
+            {(aiRiskError || aiChatError) && (
               <div className="mt-2 text-[10px] text-indigo-700/80 dark:text-indigo-200/80">
                 {lang === "zh" ? "AI 服务暂不可用，已展示本地建议。" : "AI service unavailable, fallback suggestion shown."}
               </div>
             )}
+            <div className="mt-3 max-h-44 space-y-2 overflow-y-auto rounded-lg border border-indigo-200/60 bg-white/50 p-2 dark:border-indigo-400/20 dark:bg-slate-900/20">
+              {aiChatMessages.length === 0 ? (
+                <div className="text-[11px] text-indigo-700/80 dark:text-indigo-200/80">
+                  {lang === "zh"
+                    ? "可继续在这里追问模型与补货细节。"
+                    : "You can ask follow-up questions about models and replenishment here."}
+                </div>
+              ) : (
+                aiChatMessages.map((msg, idx) => (
+                  <div
+                    key={`${msg.role}-${idx}`}
+                    className={`rounded-md px-2 py-1 text-[11px] leading-relaxed ${
+                      msg.role === "user"
+                        ? "ml-6 bg-indigo-600/90 text-white"
+                        : "mr-6 bg-indigo-100 text-indigo-900 dark:bg-indigo-500/20 dark:text-indigo-100"
+                    }`}
+                  >
+                    {msg.text}
+                  </div>
+                ))
+              )}
+              {aiChatLoading && (
+                <div className="mr-6 rounded-md bg-indigo-100 px-2 py-1 text-[11px] text-indigo-900 dark:bg-indigo-500/20 dark:text-indigo-100">
+                  {tt(TEXT.aiRiskAsking, lang)}
+                </div>
+              )}
+            </div>
+            <form onSubmit={handleMiniChatAsk} className="mt-2 flex items-center gap-2">
+              <input
+                value={aiChatInput}
+                onChange={(e) => setAiChatInput(e.target.value)}
+                placeholder={tt(TEXT.aiRiskInputPlaceholder, lang)}
+                className="min-w-0 flex-1 rounded-md border border-indigo-200 bg-white/80 px-2 py-1.5 text-xs text-indigo-900 placeholder:text-indigo-500/70 outline-none focus:border-indigo-400 dark:border-indigo-400/30 dark:bg-slate-900/30 dark:text-indigo-100"
+              />
+              <button
+                type="submit"
+                disabled={aiChatLoading || !aiChatInput.trim()}
+                className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {tt(TEXT.aiRiskAsk, lang)}
+              </button>
+            </form>
           </div>
         </div>
       </div>

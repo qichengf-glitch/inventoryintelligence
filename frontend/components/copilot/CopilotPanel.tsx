@@ -176,6 +176,7 @@ export default function CopilotPanel({ summaryContext }: CopilotPanelProps) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          scope: "home",
           question: prompt,
           forecastSummary,
           dashboardSummaryContext: summaryContext,

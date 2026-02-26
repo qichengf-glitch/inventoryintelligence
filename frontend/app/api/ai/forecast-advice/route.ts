@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseClient } from "@/lib/supabaseClient";
+import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
 
 type ForecastSummary = {
@@ -14,21 +15,94 @@ type ForecastSummary = {
   projectedStockoutMonth?: string | null;
   risk?: { label?: string; desc?: string; suggestion?: string };
   models?: Array<{ name: string; nextMonths: Array<{ month: string; value: number }> }>;
+  modelBlend?: {
+    leadDemandByModel?: Array<{ name: string; leadDemand: number }>;
+    medianLeadDemand?: number;
+    minLeadDemand?: number;
+    maxLeadDemand?: number;
+  };
   generatedAt?: string;
 };
 
 type ChatTurn = { role: "user" | "assistant"; text: string };
+type AssistantScope = "home" | "forecast";
+type TableStatus = "ok" | "missing" | "error";
+
+type TableStat = {
+  table: string;
+  rowCount: number | null;
+  status: TableStatus;
+  error?: string;
+};
+
+type ModelCapability = {
+  key: string;
+  name: string;
+  minHistoryMonths: number;
+  strengths: string;
+  caveats: string;
+};
 
 type DashboardContext = {
+  scope: AssistantScope;
+  dataSource: "admin" | "anon";
   totalRows: number;
   sampledRows: number;
   truncated: boolean;
   totalSkus: number;
   latestMonth: string | null;
+  allMonths: string[];
   recentMonthlyStats: Array<{ month: string; totalSales: number; totalStock: number }>;
   lowStockSkus: Array<{ sku: string; stock: number; safetyStock: number; gap: number }>;
   topSalesSkus: Array<{ sku: string; sales: number; stock: number }>;
+  tableStats: TableStat[];
+  modelCatalog: ModelCapability[];
 };
+
+const MODEL_CATALOG: ModelCapability[] = [
+  {
+    key: "NAIVE",
+    name: "Naive",
+    minHistoryMonths: 1,
+    strengths: "Very robust baseline; works with sparse history.",
+    caveats: "Cannot capture trend/seasonality.",
+  },
+  {
+    key: "SNAIVE",
+    name: "Seasonal Naive",
+    minHistoryMonths: 12,
+    strengths: "Strong seasonal baseline by reusing last-year same month.",
+    caveats: "Needs stable seasonality and at least 12 months.",
+  },
+  {
+    key: "SMA",
+    name: "Simple Moving Average",
+    minHistoryMonths: 3,
+    strengths: "Smooths noise and easy to explain.",
+    caveats: "Lags turning points.",
+  },
+  {
+    key: "SES",
+    name: "Simple Exponential Smoothing",
+    minHistoryMonths: 4,
+    strengths: "Adaptive smoothing for level series.",
+    caveats: "Weak when trend/seasonality is strong.",
+  },
+  {
+    key: "HOLT",
+    name: "Holt Linear Trend",
+    minHistoryMonths: 6,
+    strengths: "Captures level + trend.",
+    caveats: "No explicit seasonality.",
+  },
+  {
+    key: "HW",
+    name: "Holt-Winters",
+    minHistoryMonths: 24,
+    strengths: "Captures level + trend + seasonality.",
+    caveats: "Needs long stable history; sensitive on short/noisy series.",
+  },
+];
 
 function toNum(v: unknown) {
   const n = Number(v);
@@ -60,20 +134,60 @@ function parseMonth(value: unknown): string | null {
   return null;
 }
 
-async function collectDashboardContext(): Promise<DashboardContext> {
-  const supabase = createSupabaseClient();
+function classifyTableStatus(message: string, code: string | null): TableStatus {
+  const lower = message.toLowerCase();
+  if (code === "42P01" || code === "PGRST205" || lower.includes("does not exist")) {
+    return "missing";
+  }
+  return "error";
+}
+
+function tableRefOf(supabase: any, schema: string | undefined, table: string) {
+  return schema ? supabase.schema(schema).from(table) : supabase.from(table);
+}
+
+async function collectTableStats(supabase: any, schema: string | undefined, tableName: string): Promise<TableStat> {
+  const result = await tableRefOf(supabase, schema, tableName).select("*", { head: true, count: "exact" });
+  if (result.error) {
+    return {
+      table: tableName,
+      rowCount: null,
+      status: classifyTableStatus(result.error.message, result.error.code || null),
+      error: result.error.message,
+    };
+  }
+  return {
+    table: tableName,
+    rowCount: result.count ?? 0,
+    status: "ok",
+  };
+}
+
+async function getSupabaseForContext(): Promise<{ supabase: any; source: "admin" | "anon" }> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    return { supabase, source: "admin" };
+  } catch {
+    return { supabase: createSupabaseClient(), source: "anon" };
+  }
+}
+
+async function collectDashboardContext(scope: AssistantScope): Promise<DashboardContext> {
+  const { supabase, source } = await getSupabaseForContext();
   const { schema, table, skuColumn, timeColumn, salesColumn, stockColumn } = getInventoryConfig();
-  const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
+  const tableRef = tableRefOf(supabase, schema, table);
   const timeKey = timeColumn || "Time";
 
-  const pageSize = 1000;
-  const maxRows = 8000;
+  const pageSize = 2000;
+  const maxRows = scope === "home" ? 200_000 : 20_000;
   let offset = 0;
   const rows: any[] = [];
 
   while (rows.length < maxRows) {
     const { data, error } = await tableRef
-      .select(buildSelect([skuColumn, timeKey, salesColumn, stockColumn, "safety_stock", "category"]))
+      .select(
+        buildSelect([skuColumn, timeKey, salesColumn, stockColumn, "safety_stock", "category", "batch", "remark"])
+      )
       .order(timeKey, { ascending: false })
       .range(offset, offset + pageSize - 1);
 
@@ -86,6 +200,13 @@ async function collectDashboardContext(): Promise<DashboardContext> {
 
   const sampledRows = rows.length;
   const truncated = sampledRows >= maxRows;
+  let totalRows = sampledRows;
+  if (truncated) {
+    const countRes = await tableRef.select("*", { head: true, count: "exact" });
+    if (!countRes.error && typeof countRes.count === "number") {
+      totalRows = countRes.count;
+    }
+  }
   const skuSet = new Set<string>();
   const monthSales = new Map<string, number>();
   const monthStock = new Map<string, number>();
@@ -104,7 +225,7 @@ async function collectDashboardContext(): Promise<DashboardContext> {
 
   const sortedMonths = Array.from(monthSales.keys()).sort();
   const latestMonth = sortedMonths.length ? sortedMonths[sortedMonths.length - 1] : null;
-  const recentMonthlyStats = sortedMonths.slice(-6).map((month) => ({
+  const recentMonthlyStats = sortedMonths.slice(-12).map((month) => ({
     month,
     totalSales: Math.round(monthSales.get(month) || 0),
     totalStock: Math.round(monthStock.get(month) || 0),
@@ -120,7 +241,7 @@ async function collectDashboardContext(): Promise<DashboardContext> {
     })
     .filter((x) => x.sku && (x.stock <= 0 || (x.safetyStock > 0 && x.stock < x.safetyStock)))
     .sort((a, b) => b.gap - a.gap)
-    .slice(0, 8);
+    .slice(0, 15);
 
   const topSalesSkus = latestRows
     .map((r) => ({
@@ -130,17 +251,25 @@ async function collectDashboardContext(): Promise<DashboardContext> {
     }))
     .filter((x) => x.sku)
     .sort((a, b) => b.sales - a.sales)
-    .slice(0, 8);
+    .slice(0, 15);
+
+  const coreTables = Array.from(new Set(["datasets", "inventory_monthly", "inventory_summary", table]));
+  const tableStats = await Promise.all(coreTables.map((name) => collectTableStats(supabase, schema, name)));
 
   return {
-    totalRows: offset + sampledRows,
+    scope,
+    dataSource: source,
+    totalRows,
     sampledRows,
     truncated,
     totalSkus: skuSet.size,
     latestMonth,
+    allMonths: sortedMonths,
     recentMonthlyStats,
     lowStockSkus,
     topSalesSkus,
+    tableStats,
+    modelCatalog: MODEL_CATALOG,
   };
 }
 
@@ -149,18 +278,67 @@ function buildPrompt(
   summary?: ForecastSummary,
   dashboard?: DashboardContext,
   recentChat?: ChatTurn[],
+  dashboardSummaryContext?: unknown,
+  scope: AssistantScope = "forecast",
   lang: "zh" | "en" = "zh"
 ) {
-  const intro =
-    lang === "zh"
+  const modelSynthesisBlock = (() => {
+    const models = summary?.models ?? [];
+    if (models.length <= 1) {
+      return lang === "zh"
+        ? "未提供多模型预测；可使用单模型结果并说明不确定性。"
+        : "No multi-model forecast provided; use single-model result with uncertainty note.";
+    }
+    const byModel = summary?.modelBlend?.leadDemandByModel ?? [];
+    const spreadMin = summary?.modelBlend?.minLeadDemand;
+    const spreadMax = summary?.modelBlend?.maxLeadDemand;
+    const spreadMedian = summary?.modelBlend?.medianLeadDemand;
+    return JSON.stringify(
+      {
+        availableModels: models.map((m) => m.name),
+        leadDemandByModel: byModel,
+        leadDemandRange: { min: spreadMin, median: spreadMedian, max: spreadMax },
+      },
+      null,
+      2
+    );
+  })();
+
+  const intro = (() => {
+    if (scope === "home") {
+      return lang === "zh"
+        ? "你是首页 AI 数据副驾驶。你可以回答用户关于数据库、库存数据、预测模型、模型差异、表结构和指标定义的所有问题。"
+        : "You are the home AI data copilot. You can answer all questions about database contents, inventory metrics, forecast models, and model behavior.";
+    }
+    return lang === "zh"
       ? "你是库存分析助手。请结合预测数据与历史/全局库存数据，给出简单易懂、可执行的建议。"
       : "You are an inventory analysis assistant. Use forecast + historical dashboard data and give clear, practical advice.";
+  })();
 
-  const rules =
-    lang === "zh"
+  const rules = (() => {
+    if (scope === "home") {
+      return lang === "zh"
+        ? [
+            "输出使用简洁中文。",
+            "优先回答用户直接问题，可以是数据库问题、模型原理问题、业务指标问题或诊断问题。",
+            "引用上下文中的具体数字与表名（如 inventory_monthly / inventory_summary / datasets）。",
+            "若问题超出当前上下文，明确指出缺失数据并给出下一步可执行检查项。",
+            "不要编造不存在的数字或表结构。",
+          ].join("\n")
+        : [
+            "Use concise English.",
+            "Answer direct questions on database/model/business metrics/diagnosis.",
+            "Cite concrete numbers and table names from context.",
+            "If context is insufficient, state limits and propose actionable checks.",
+            "Do not invent numbers or schema details.",
+          ].join("\n");
+    }
+    return lang === "zh"
       ? [
           "输出使用简洁中文。",
           "先给结论，再给2-4条行动建议。",
+          "如果提供了多个预测模型，必须先综合所有模型再给建议，不能只基于单一模型。",
+          "优先使用模型共识（中位数）并同时说明区间（最小-最大）来表达不确定性。",
           "优先引用有依据的数字（最近月份、库存、销量、缺货风险）。",
           "如数据不足，明确指出缺失项并给出保守建议。",
           "不要编造不存在的数字。",
@@ -168,21 +346,35 @@ function buildPrompt(
       : [
           "Use concise English.",
           "Give a conclusion first, then 2-4 action items.",
+          "If multiple forecast models are provided, synthesize across all models before advising.",
+          "Use model consensus (median) and range (min-max) to express uncertainty.",
           "If data is missing, state it and provide conservative guidance.",
           "Do not invent numbers.",
         ].join("\n");
+  })();
 
   const forecastBlock = JSON.stringify(summary ?? {}, null, 2);
   const dashboardBlock = JSON.stringify(dashboard ?? {}, null, 2);
+  const uiBlock = JSON.stringify(dashboardSummaryContext ?? {}, null, 2);
   const chatBlock = JSON.stringify(recentChat ?? [], null, 2);
-  return `${intro}\n\nRules:\n${rules}\n\nUser question:\n${question}\n\nRecent chat turns:\n${chatBlock}\n\nForecast summary:\n${forecastBlock}\n\nDashboard historical/global context:\n${dashboardBlock}`;
+  return `${intro}\n\nRules:\n${rules}\n\nUser question:\n${question}\n\nRecent chat turns:\n${chatBlock}\n\nForecast summary:\n${forecastBlock}\n\nMulti-model synthesis hint:\n${modelSynthesisBlock}\n\nDashboard UI snapshot context:\n${uiBlock}\n\nDatabase + model context:\n${dashboardBlock}`;
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const { question, forecastSummary, lang, model: requestedModel, recentChat } = (await req.json()) as {
+    const {
+      question,
+      forecastSummary,
+      dashboardSummaryContext,
+      scope,
+      lang,
+      model: requestedModel,
+      recentChat,
+    } = (await req.json()) as {
       question?: string;
       forecastSummary?: ForecastSummary;
+      dashboardSummaryContext?: unknown;
+      scope?: AssistantScope;
       lang?: "zh" | "en";
       model?: string;
       recentChat?: ChatTurn[];
@@ -200,9 +392,10 @@ export async function POST(req: NextRequest) {
     const allowList = new Set(["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"]);
     const envModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
     const model = requestedModel && allowList.has(requestedModel) ? requestedModel : envModel;
+    const resolvedScope: AssistantScope = scope === "home" ? "home" : "forecast";
     let dashboardContext: DashboardContext | undefined;
     try {
-      dashboardContext = await collectDashboardContext();
+      dashboardContext = await collectDashboardContext(resolvedScope);
     } catch {
       dashboardContext = undefined;
     }
@@ -211,6 +404,8 @@ export async function POST(req: NextRequest) {
       forecastSummary,
       dashboardContext,
       Array.isArray(recentChat) ? recentChat.slice(-8) : [],
+      dashboardSummaryContext,
+      resolvedScope,
       lang === "en" ? "en" : "zh"
     );
 
@@ -255,7 +450,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return NextResponse.json({ answer, model, hasDashboardContext: Boolean(dashboardContext) });
+    return NextResponse.json({
+      answer,
+      model,
+      scope: resolvedScope,
+      hasDashboardContext: Boolean(dashboardContext),
+      hasModelCatalog: Boolean(dashboardContext?.modelCatalog?.length),
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown server error";
     return NextResponse.json({ error: message }, { status: 500 });
