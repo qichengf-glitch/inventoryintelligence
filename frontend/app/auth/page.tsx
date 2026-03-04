@@ -45,6 +45,13 @@ type ProfileSeed = {
   name?: string;
 };
 
+function getEmailRedirectTo() {
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/+$/, "");
+  if (siteUrl) return `${siteUrl}/auth/callback`;
+  if (typeof window !== "undefined") return `${window.location.origin}/auth/callback`;
+  return undefined;
+}
+
 export default function AuthPage() {
   const router = useRouter();
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
@@ -125,8 +132,7 @@ export default function AuthPage() {
 
     try {
       if (mode === "signup") {
-        const emailRedirectTo =
-          typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : undefined;
+        const emailRedirectTo = getEmailRedirectTo();
         const { data, error } = await supabase.auth.signUp({
           email: cleanEmail,
           password,
@@ -210,8 +216,7 @@ export default function AuthPage() {
     setErrorMessage("");
 
     try {
-      const emailRedirectTo =
-        typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : undefined;
+      const emailRedirectTo = getEmailRedirectTo();
       const { error } = await supabase.auth.resend({
         type: "signup",
         email: cleanEmail,

@@ -6,8 +6,7 @@ import { getSupabasePublicEnv } from "@/lib/supabase/env";
 function isAnonymousPath(pathname: string) {
   return (
     pathname === "/" ||
-    pathname === "/auth" ||
-    pathname === "/auth/callback" ||
+    pathname.startsWith("/auth") ||
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico"
   );
@@ -60,7 +59,7 @@ export async function middleware(request: NextRequest) {
     return withCopiedCookies(response, NextResponse.redirect(url));
   }
 
-  if (pathname === "/auth" && user) {
+  if ((pathname === "/auth" || pathname === "/auth/") && user) {
     const url = request.nextUrl.clone();
     url.pathname = "/home";
     return withCopiedCookies(response, NextResponse.redirect(url));

@@ -1,6 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { NextResponse, type NextRequest } from "next/server";
+import type { EmailOtpType } from "@supabase/supabase-js";
 
 import { getSupabasePublicEnv } from "@/lib/supabase/env";
 
@@ -17,6 +18,8 @@ function buildAuthRedirect(requestUrl: URL, params?: Record<string, string>) {
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
+  const tokenHash = requestUrl.searchParams.get("token_hash");
+  const otpTypeRaw = requestUrl.searchParams.get("type");
   const error = requestUrl.searchParams.get("error");
   const errorDescription = requestUrl.searchParams.get("error_description");
 
@@ -29,11 +32,11 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  if (!code) {
+  if (!code && !tokenHash) {
     return NextResponse.redirect(
       buildAuthRedirect(requestUrl, {
         error: "missing_code",
-        error_description: "No code returned from email confirmation link.",
+        error_description: "No code or token hash returned from email confirmation link.",
       })
     );
   }
@@ -53,14 +56,30 @@ export async function GET(request: NextRequest) {
     },
   });
 
-  const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-  if (exchangeError) {
-    return NextResponse.redirect(
-      buildAuthRedirect(requestUrl, {
-        error: "exchange_failed",
-        error_description: exchangeError.message,
-      })
-    );
+  if (code) {
+    const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+    if (exchangeError) {
+      return NextResponse.redirect(
+        buildAuthRedirect(requestUrl, {
+          error: "exchange_failed",
+          error_description: exchangeError.message,
+        })
+      );
+    }
+  } else if (tokenHash) {
+    const type = (otpTypeRaw || "signup") as EmailOtpType;
+    const { error: verifyError } = await supabase.auth.verifyOtp({
+      type,
+      token_hash: tokenHash,
+    });
+    if (verifyError) {
+      return NextResponse.redirect(
+        buildAuthRedirect(requestUrl, {
+          error: "verify_failed",
+          error_description: verifyError.message,
+        })
+      );
+    }
   }
 
   const {
