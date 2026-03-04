@@ -1,3 +1,5 @@
+import { evaluateInventoryStatus } from "@/lib/inventoryStatus";
+
 export type StockStatusKey =
   | "low_stock"
   | "out_of_stock"
@@ -50,26 +52,14 @@ function normalizeThreshold(value: number | null | undefined) {
 
 export function classifyStockStatus(snapshot: DashboardSkuSnapshot): StockStatusKey {
   const currentStock = Number.isFinite(snapshot.currentStock) ? snapshot.currentStock : 0;
+  const safetyThreshold =
+    normalizeThreshold(snapshot.reorderPoint) ?? normalizeThreshold(snapshot.safetyStock) ?? 0;
+  const status = evaluateInventoryStatus(currentStock, safetyThreshold);
 
-  if (currentStock <= 0) {
-    return "out_of_stock";
-  }
-
-  const reorderPoint =
-    normalizeThreshold(snapshot.reorderPoint) ?? normalizeThreshold(snapshot.safetyStock);
-
-  if (reorderPoint !== null && currentStock <= reorderPoint) {
-    return "low_stock";
-  }
-
-  const overStockThreshold =
-    normalizeThreshold(snapshot.maxStock) ?? normalizeThreshold(snapshot.targetLevel);
-
-  if (overStockThreshold !== null && currentStock > overStockThreshold) {
-    return "over_stock";
-  }
-
-  return "normal_stock";
+  if (status === "Out") return "out_of_stock";
+  if (status === "Low") return "low_stock";
+  if (status === "Normal") return "normal_stock";
+  return "over_stock";
 }
 
 export function getStockStatusBreakdown(

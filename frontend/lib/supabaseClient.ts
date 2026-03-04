@@ -8,8 +8,12 @@ const SUPABASE_ANON_KEY =
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
 
 export function createSupabaseClient() {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    throw new Error("Supabase URL or anon key is missing. Please set SUPABASE_URL and SUPABASE_ANON_KEY in env.");
+  const url = (SUPABASE_URL ?? "").toString().trim();
+  const key = (SUPABASE_ANON_KEY ?? "").toString().trim();
+  if (!url || !key) {
+    throw new Error(
+      "Supabase URL or anon key is missing. In Vercel: Project → Settings → Environment Variables → add SUPABASE_URL and SUPABASE_ANON_KEY for Production, then redeploy."
+    );
   }
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return createClient(url, key);
 }

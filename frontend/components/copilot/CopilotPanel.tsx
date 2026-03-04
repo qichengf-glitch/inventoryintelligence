@@ -73,7 +73,7 @@ export default function CopilotPanel({ summaryContext }: CopilotPanelProps) {
   const [activeSessionId, setActiveSessionId] = useState<string>(() => sessions[0]?.id || "");
 
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesViewportRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!activeSessionId && sessions[0]) {
@@ -87,9 +87,15 @@ export default function CopilotPanel({ summaryContext }: CopilotPanelProps) {
 
   const activeMessages = activeSession?.messages || [];
 
+  const scrollMessagesToBottom = (behavior: ScrollBehavior = "auto") => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTo({ top: viewport.scrollHeight, behavior });
+  };
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [activeMessages.length]);
+    scrollMessagesToBottom("smooth");
+  }, [activeMessages.length, activeSession?.id]);
 
   const updateSessionMessages = (
     sessionId: string,
@@ -310,7 +316,7 @@ export default function CopilotPanel({ summaryContext }: CopilotPanelProps) {
         </aside>
 
         <section className="flex min-h-0 flex-col">
-          <div className="flex-1 overflow-y-auto p-4">
+          <div ref={messagesViewportRef} className="flex-1 overflow-y-auto p-4">
             {activeMessages.length ? (
               <div className="space-y-3">
                 {activeMessages.map((message) => (
@@ -330,7 +336,6 @@ export default function CopilotPanel({ summaryContext }: CopilotPanelProps) {
                     {message.text}
                   </article>
                 ))}
-                <div ref={messagesEndRef} />
               </div>
             ) : (
               <div className="grid h-full place-items-center text-sm text-slate-500">
