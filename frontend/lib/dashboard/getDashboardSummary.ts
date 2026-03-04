@@ -2,6 +2,10 @@ import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
 import { createSupabaseClient } from "@/lib/supabaseClient";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import {
+  loadSkuReferenceData,
+  normalizeSkuCode,
+} from "@/lib/server/skuReferenceData";
+import {
   getStockStatusBreakdown,
   type DashboardSkuSnapshot,
   type StockStatusKey,
@@ -45,6 +49,33 @@ type DashboardMonthlySummaryRow = {
   normal_stock_count: number;
   updated_at?: string;
 };
+
+type StrictLatestMonthKpiTotals = {
+  latestMonth: string | null;
+  latestMonthRaw?: string | number | null;
+  currentInventoryTotal: number;
+  monthlySalesTotal: number;
+  sampledRows: number;
+};
+
+const STOCK_VALUE_FALLBACK_COLUMNS = [
+  "month_end_stock",
+  "month_end_inventory",
+  "month_end_balance",
+  "month_balance",
+  "ending_inventory",
+  "ending_stock",
+  "current_balance",
+  "本月结存",
+];
+
+const SALES_VALUE_FALLBACK_COLUMNS = [
+  "month_sales",
+  "total_month_sales",
+  "monthly_sales",
+  "sales",
+  "本月销售",
+];
 
 function parseMonth(value: unknown): string | null {
   if (value == null) return null;
@@ -93,6 +124,47 @@ function readNumber(row: RawInventoryRow, columns: string[]) {
   return 0;
 }
 
+function buildColumnCandidates(primaryColumn: string | undefined, fallbackColumns: string[]) {
+  const candidates = [primaryColumn, ...fallbackColumns].filter(
+    (value): value is string => Boolean(value && String(value).trim())
+  );
+  return Array.from(new Set(candidates));
+}
+
+function toMonthFilterValue(value: unknown): string | number | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || null;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
+  return null;
+}
+
+function getMonthStartAndNext(latestMonth: string) {
+  const [yearRaw, monthRaw] = latestMonth.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    return null;
+  }
+
+  const startDate = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`;
+  const nextMonthDate =
+    month === 12
+      ? `${String(year + 1).padStart(4, "0")}-01-01`
+      : `${String(year).padStart(4, "0")}-${String(month + 1).padStart(2, "0")}-01`;
+
+  return {
+    startDate,
+    nextMonthDate,
+  };
+}
+
 function readNullableNumber(row: RawInventoryRow, columns: string[]) {
   for (const column of columns) {
     if (!column) continue;
@@ -120,7 +192,8 @@ function toSnapshot(
   skuColumn: string,
   timeColumn: string,
   stockColumn: string,
-  salesColumn: string
+  salesColumn: string,
+  safetyStockBySku: Map<string, number>
 ): DashboardSkuSnapshot | null {
   const sku = readSku(row, skuColumn);
   if (!sku) return null;
@@ -128,12 +201,19 @@ function toSnapshot(
   const month = parseMonth(row[timeColumn] ?? row.Time ?? row.time ?? row.month ?? row.Month);
   if (!month) return null;
 
+  const mappedSafetyStock = safetyStockBySku.get(normalizeSkuCode(sku));
+  const rowSafetyStock = readNullableNumber(row, ["safety_stock", "safetyStock"]);
+  const resolvedSafetyStock =
+    mappedSafetyStock != null && Number.isFinite(mappedSafetyStock)
+      ? mappedSafetyStock
+      : rowSafetyStock;
+
   return {
     sku,
     month,
     currentStock: readNumber(row, [stockColumn, "month_end_stock", "month_end_inventory"]),
-    reorderPoint: readNullableNumber(row, ["reorder_point", "reorderPoint"]),
-    safetyStock: readNullableNumber(row, ["safety_stock", "safetyStock"]),
+    reorderPoint: resolvedSafetyStock,
+    safetyStock: resolvedSafetyStock,
     maxStock: readNullableNumber(row, ["max_stock", "maxStock"]),
     targetLevel: readNullableNumber(row, ["target_level", "target_stock", "targetLevel", "targetStock"]),
     sales: readNumber(row, [salesColumn, "month_sales"]),
@@ -387,6 +467,160 @@ async function getSupabaseForDashboard() {
   }
 }
 
+function buildEmptyStrictLatestMonthKpiTotals(): StrictLatestMonthKpiTotals {
+  return {
+    latestMonth: null,
+    latestMonthRaw: null,
+    currentInventoryTotal: 0,
+    monthlySalesTotal: 0,
+    sampledRows: 0,
+  };
+}
+
+async function readStrictLatestMonthKpiTotals(
+  supabase: SupabaseLikeClient,
+  schema: string | undefined
+): Promise<StrictLatestMonthKpiTotals> {
+  const fallback = buildEmptyStrictLatestMonthKpiTotals();
+  const { stockColumn, salesColumn } = getInventoryConfig();
+  const stockCandidates = buildColumnCandidates(stockColumn, STOCK_VALUE_FALLBACK_COLUMNS);
+  const salesCandidates = buildColumnCandidates(salesColumn, SALES_VALUE_FALLBACK_COLUMNS);
+  const monthlyTableRef = () =>
+    schema ? supabase.schema(schema).from("inventory_monthly") : supabase.from("inventory_monthly");
+
+  const latestMonthRes = await monthlyTableRef()
+    .select("month")
+    .not("month", "is", null)
+    .order("month", { ascending: false })
+    .limit(50);
+
+  if (latestMonthRes.error) {
+    if (latestMonthRes.error.code !== "42P01" && latestMonthRes.error.code !== "PGRST205") {
+      console.warn(
+        "[dashboard/summary] failed to read latest month from inventory_monthly:",
+        latestMonthRes.error.message
+      );
+    }
+    return fallback;
+  }
+
+  const latestMonthRows = (latestMonthRes.data || []) as RawInventoryRow[];
+  if (latestMonthRows.length === 0) {
+    return fallback;
+  }
+
+  let latestMonthRaw: unknown = null;
+  let latestMonth: string | null = null;
+  let monthFilterValue: string | number | null = null;
+
+  for (const row of latestMonthRows) {
+    const raw = row?.month;
+    const parsed = parseMonth(raw);
+    const filterValue = toMonthFilterValue(raw);
+    if (!parsed || filterValue == null) continue;
+    latestMonthRaw = raw;
+    latestMonth = parsed;
+    monthFilterValue = filterValue;
+    break;
+  }
+
+  if (!latestMonth || monthFilterValue == null) {
+    return fallback;
+  }
+
+  const selectColumns = buildSelect([
+    "month",
+    ...stockCandidates,
+    ...salesCandidates,
+  ]);
+
+  let latestRowsRes = await monthlyTableRef()
+    .select(selectColumns)
+    .eq("month", monthFilterValue);
+
+  // Fallback for month fields stored as timestamp/text where strict equality may miss same-month rows.
+  if (!latestRowsRes.error && ((latestRowsRes.data as RawInventoryRow[] | null) ?? []).length === 0) {
+    const bounds = getMonthStartAndNext(latestMonth);
+    if (bounds) {
+      latestRowsRes = await monthlyTableRef()
+        .select(selectColumns)
+        .gte("month", bounds.startDate)
+        .lt("month", bounds.nextMonthDate);
+    }
+  }
+
+  if (latestRowsRes.error) {
+    console.warn(
+      "[dashboard/summary] failed to read latest-month rows from inventory_monthly:",
+      latestRowsRes.error.message
+    );
+    return {
+      ...fallback,
+      latestMonth,
+      latestMonthRaw: monthFilterValue,
+    };
+  }
+
+  const rows = (latestRowsRes.data || []) as RawInventoryRow[];
+  let currentInventoryTotal = 0;
+  let monthlySalesTotal = 0;
+
+  for (const row of rows) {
+    currentInventoryTotal += readNumber(row, stockCandidates);
+    monthlySalesTotal += readNumber(row, salesCandidates);
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    console.info(
+      `[dashboard/summary] strict latest-month totals month=${latestMonth} rows=${rows.length} current_inventory_total=${currentInventoryTotal} monthly_sales_total=${monthlySalesTotal}`
+    );
+  }
+
+  return {
+    latestMonth,
+    latestMonthRaw: toMonthFilterValue(latestMonthRaw),
+    currentInventoryTotal,
+    monthlySalesTotal,
+    sampledRows: rows.length,
+  };
+}
+
+function applyStrictLatestMonthKpiTotals(
+  summary: DashboardSummary,
+  strictTotals: StrictLatestMonthKpiTotals
+): DashboardSummary {
+  // If strict latest-month query can't read usable rows, keep existing summary values
+  // instead of overriding KPI values to 0.
+  if (!strictTotals.latestMonth || strictTotals.sampledRows <= 0) {
+    return {
+      ...summary,
+      latestMonth: strictTotals.latestMonth ?? summary.latestMonth,
+    };
+  }
+
+  const kpis = summary.kpis.map((item) => {
+    if (item.id === "kpi_3") {
+      return {
+        ...item,
+        value: strictTotals.currentInventoryTotal,
+      };
+    }
+    if (item.id === "kpi_4") {
+      return {
+        ...item,
+        value: strictTotals.monthlySalesTotal,
+      };
+    }
+    return item;
+  });
+
+  return {
+    ...summary,
+    latestMonth: strictTotals.latestMonth ?? summary.latestMonth,
+    kpis,
+  };
+}
+
 async function tryReadPrecomputedDashboardSummary(
   supabase: SupabaseLikeClient,
   schema?: string
@@ -524,15 +758,6 @@ function buildSourceCandidates(): DataSourceCandidate[] {
 
   const candidates: DataSourceCandidate[] = [
     {
-      label: "configured",
-      schema: resolvedConfigured.schema,
-      table: resolvedConfigured.table,
-      skuColumn,
-      timeColumn: timeColumn || "month",
-      stockColumn,
-      salesColumn,
-    },
-    {
       label: "inventory_summary",
       schema,
       table: "inventory_summary",
@@ -550,6 +775,15 @@ function buildSourceCandidates(): DataSourceCandidate[] {
       stockColumn: "month_end_stock",
       salesColumn: "month_sales",
     },
+    {
+      label: "configured",
+      schema: resolvedConfigured.schema,
+      table: resolvedConfigured.table,
+      skuColumn,
+      timeColumn: timeColumn || "month",
+      stockColumn,
+      salesColumn,
+    },
   ];
 
   const seen = new Set<string>();
@@ -564,7 +798,8 @@ function buildSourceCandidates(): DataSourceCandidate[] {
 }
 
 async function tryResolveRowsFromCandidates(
-  supabase: SupabaseLikeClient
+  supabase: SupabaseLikeClient,
+  safetyStockBySku: Map<string, number>
 ): Promise<ResolvedDashboardRows | null> {
   const candidates = buildSourceCandidates();
 
@@ -587,7 +822,8 @@ async function tryResolveRowsFromCandidates(
         candidate.skuColumn,
         candidate.timeColumn,
         candidate.stockColumn,
-        candidate.salesColumn
+        candidate.salesColumn,
+        safetyStockBySku
       );
 
       if (monthBuckets.size === 0) {
@@ -614,12 +850,20 @@ function buildMonthBuckets(
   skuColumn: string,
   timeKey: string,
   stockColumn: string,
-  salesColumn: string
+  salesColumn: string,
+  safetyStockBySku: Map<string, number>
 ) {
   const monthBuckets = new Map<string, Map<string, DashboardSkuSnapshot>>();
 
   for (const row of rows) {
-    const snapshot = toSnapshot(row, skuColumn, timeKey, stockColumn, salesColumn);
+    const snapshot = toSnapshot(
+      row,
+      skuColumn,
+      timeKey,
+      stockColumn,
+      salesColumn,
+      safetyStockBySku
+    );
     if (!snapshot || !snapshot.month) continue;
 
     if (!monthBuckets.has(snapshot.month)) {
@@ -643,19 +887,23 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
   try {
     const { schema } = getInventoryConfig();
     const { supabase, source: clientSource } = await getSupabaseForDashboard();
+    const strictTotals = await readStrictLatestMonthKpiTotals(supabase, schema);
+    const skuRef = await loadSkuReferenceData();
+    const safetyStockBySku = new Map<string, number>(
+      Object.entries(skuRef.safetyStockBySku)
+    );
 
-    const precomputed = await tryReadPrecomputedDashboardSummary(supabase, schema);
-    if (precomputed) {
-      console.log(
-        `[dashboard/summary] source=dashboard_monthly_summary client=${clientSource} latest=${precomputed.latestMonth ?? "n/a"}`
-      );
-      return precomputed;
-    }
-
-    const resolved = await tryResolveRowsFromCandidates(supabase);
+    const resolved = await tryResolveRowsFromCandidates(supabase, safetyStockBySku);
     if (!resolved) {
+      const precomputed = await tryReadPrecomputedDashboardSummary(supabase, schema);
+      if (precomputed) {
+        console.log(
+          `[dashboard/summary] source=dashboard_monthly_summary(fallback) client=${clientSource} latest=${precomputed.latestMonth ?? "n/a"}`
+        );
+        return applyStrictLatestMonthKpiTotals(precomputed, strictTotals);
+      }
       console.warn("[dashboard/summary] no valid data source found; returning empty summary");
-      return fallback;
+      return applyStrictLatestMonthKpiTotals(fallback, strictTotals);
     }
 
     const { rows, source, monthBuckets } = resolved;
@@ -678,7 +926,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
       `[dashboard/summary] source=${source.label}:${source.schema || "public"}.${source.table} client=${clientSource} rows=${rows.length} latest=${latestMonth ?? "n/a"}`
     );
 
-    return {
+    const summary: DashboardSummary = {
       generatedAt: new Date().toISOString(),
       latestMonth,
       previousMonth,
@@ -696,6 +944,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
         truncated: rows.length >= MAX_ROWS,
       },
     };
+    return applyStrictLatestMonthKpiTotals(summary, strictTotals);
   } catch (error) {
     console.error("[dashboard/summary] failed:", error);
     return fallback;
