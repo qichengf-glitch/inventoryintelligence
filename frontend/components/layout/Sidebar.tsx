@@ -12,7 +12,7 @@ type NavItem = {
 };
 
 const NAV_ITEMS: NavItem[] = [
-  { label: { zh: "首页", en: "Home" }, href: "/", icon: "🏠" },
+  { label: { zh: "首页", en: "Home" }, href: "/home", icon: "🏠" },
   { label: { zh: "数据中心", en: "Data Center" }, href: "/data-center", icon: "🌐" },
   { label: { zh: "分析", en: "Analysis" }, href: "/analysis", icon: "🖲️" },
   { label: { zh: "精益策略", en: "Lean Strategy" }, href: "/lean-strategy", icon: "🚥" },
@@ -21,9 +21,6 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 function matchesRoute(pathname: string, href: string) {
-  if (href === "/") {
-    return pathname === "/" || pathname === "/home";
-  }
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
@@ -34,8 +31,8 @@ export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const text = {
     language: lang === "zh" ? "语言" : "Language",
-    account: lang === "zh" ? "账户" : "Account",
-    loginProfile: lang === "zh" ? "登录 / 个人中心" : "Login / Profile",
+    account: lang === "zh" ? "账户中心" : "Account Center",
+    profile: lang === "zh" ? "个人中心" : "Profile",
     expand: lang === "zh" ? "展开" : "Expand",
     collapse: lang === "zh" ? "收起" : "Collapse",
   };
@@ -64,9 +61,7 @@ export default function Sidebar() {
   };
 
   const handleProfileClick = () => {
-    const currentLoginState =
-      typeof window !== "undefined" && Boolean(localStorage.getItem("ii:mock-user"));
-    router.push(currentLoginState ? "/profile" : "/login");
+    router.push("/profile");
   };
 
   return (
@@ -154,7 +149,7 @@ export default function Sidebar() {
             {!collapsed && (
               <span className="min-w-0">
                 <span className="block truncate text-xs text-slate-400">{text.account}</span>
-                <span className="block truncate text-sm text-slate-100">{text.loginProfile}</span>
+                <span className="block truncate text-sm text-slate-100">{text.profile}</span>
               </span>
             )}
           </button>

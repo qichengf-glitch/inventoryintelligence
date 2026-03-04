@@ -1,5 +1,7 @@
-import type { ReactNode } from "react";
+"use client";
 
+import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import Sidebar from "@/components/layout/Sidebar";
 
 type AppShellProps = {
@@ -7,6 +9,13 @@ type AppShellProps = {
 };
 
 export default function AppShell({ children }: AppShellProps) {
+  const pathname = usePathname();
+  const hideSidebar = pathname === "/" || pathname.startsWith("/auth");
+
+  if (hideSidebar) {
+    return <div className="min-h-screen bg-slate-950 text-slate-50">{children}</div>;
+  }
+
   return (
     <div className="flex min-h-screen bg-slate-950 text-slate-50">
       <Sidebar />

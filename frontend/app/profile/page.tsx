@@ -1,74 +1,218 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 
-import { useLanguage } from "@/components/LanguageProvider";
+import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
-type MockUser = {
+type ProfileForm = {
   name: string;
-  email?: string;
+  phone: string;
+  title: string;
+  email: string;
+};
+
+const EMPTY_FORM: ProfileForm = {
+  name: "",
+  phone: "",
+  title: "",
+  email: "",
 };
 
 export default function ProfilePage() {
-  const { lang } = useLanguage();
-  const [user, setUser] = useState<MockUser | null>(null);
+  const router = useRouter();
+  const supabase = useMemo(() => createBrowserSupabaseClient(), []);
+
+  const [userId, setUserId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState<ProfileForm>(EMPTY_FORM);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    let active = true;
 
-    const raw = localStorage.getItem("ii:mock-user");
-    if (!raw) return;
+    const load = async () => {
+      setLoading(true);
+      setErrorMessage("");
+      setSuccessMessage("");
 
-    try {
-      const parsed = JSON.parse(raw) as MockUser;
-      if (parsed?.name) {
-        setUser(parsed);
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (!active) return;
+
+      if (userError || !user) {
+        router.replace("/auth");
+        return;
       }
-    } catch {
-      setUser(null);
-    }
-  }, []);
 
-  const handleLogout = () => {
-    if (typeof window === "undefined") return;
-    localStorage.removeItem("ii:mock-user");
-    setUser(null);
+      setUserId(user.id);
+
+      const { data: profile, error: profileError } = await supabase
+        .from("user_profiles")
+        .select("name, phone, title, email")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (!active) return;
+
+      if (profileError) {
+        setErrorMessage(`读取个人资料失败：${profileError.message}`);
+        setForm((prev) => ({ ...prev, email: user.email ?? "" }));
+        setLoading(false);
+        return;
+      }
+
+      setForm({
+        name: profile?.name ?? "",
+        phone: profile?.phone ?? "",
+        title: profile?.title ?? "",
+        email: user.email ?? profile?.email ?? "",
+      });
+      setLoading(false);
+    };
+
+    load();
+
+    return () => {
+      active = false;
+    };
+  }, [router, supabase]);
+
+  const handleSave = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (saving || !userId) return;
+
+    setSaving(true);
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    const payload = {
+      id: userId,
+      email: form.email.trim() || null,
+      name: form.name.trim() || null,
+      phone: form.phone.trim() || null,
+      title: form.title.trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await supabase.from("user_profiles").upsert(payload, { onConflict: "id" });
+
+    if (error) {
+      setErrorMessage(`保存失败：${error.message}`);
+      setSaving(false);
+      return;
+    }
+
+    setSuccessMessage("个人资料已保存。");
+    setSaving(false);
+  };
+
+  const handleSignOut = async () => {
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setErrorMessage(`退出登录失败：${error.message}`);
+      return;
+    }
+
+    router.replace("/auth");
+    router.refresh();
   };
 
   return (
-    <section className="max-w-2xl space-y-4 rounded-2xl border border-slate-800 bg-slate-900/70 px-5 py-4">
-      <p className="text-xs uppercase tracking-[0.15em] text-slate-400">
-        {lang === "zh" ? "个人中心" : "Profile"}
-      </p>
-      <h1 className="text-2xl font-semibold text-slate-100">
-        {lang === "zh" ? "个人中心" : "Profile"}
-      </h1>
-      {user ? (
-        <>
-          <p className="text-sm text-slate-300">{lang === "zh" ? "姓名" : "Name"}: {user.name}</p>
-          {user.email && <p className="text-sm text-slate-300">Email: {user.email}</p>}
+    <section className="mx-auto w-full max-w-3xl py-2">
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/70 p-6 shadow-[0_20px_60px_rgba(2,6,23,0.45)]">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.15em] text-slate-400">Personal Center</p>
+            <h1 className="mt-1 text-2xl font-semibold text-slate-100">个人中心</h1>
+            <p className="mt-2 text-sm text-slate-400">管理账户资料，更新后将写入 Supabase。</p>
+          </div>
           <button
             type="button"
-            onClick={handleLogout}
-            className="inline-flex rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
+            onClick={handleSignOut}
+            className="inline-flex rounded-xl border border-slate-600 px-4 py-2 text-sm text-slate-100 transition hover:border-slate-400 hover:bg-slate-800"
           >
-            {lang === "zh" ? "退出登录（模拟）" : "Logout (mock)"}
+            退出登录
           </button>
-        </>
-      ) : (
-        <>
-          <p className="text-sm text-slate-400">
-            {lang === "zh" ? "当前未登录，请先登录。" : "No active session. Please sign in first."}
-          </p>
-          <Link
-            href="/login"
-            className="inline-flex rounded-md border border-cyan-400/40 bg-cyan-500/10 px-3 py-2 text-sm text-cyan-200 hover:bg-cyan-500/20"
-          >
-            {lang === "zh" ? "前往登录" : "Go to login"}
-          </Link>
-        </>
-      )}
+        </div>
+
+        {loading ? (
+          <div className="mt-6 rounded-xl border border-slate-800 bg-slate-950/70 px-4 py-6 text-sm text-slate-300">
+            正在加载个人资料...
+          </div>
+        ) : (
+          <form onSubmit={handleSave} className="mt-6 space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm text-slate-300">
+                姓名
+                <input
+                  type="text"
+                  value={form.name}
+                  onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400"
+                />
+              </label>
+
+              <label className="block text-sm text-slate-300">
+                手机
+                <input
+                  type="text"
+                  value={form.phone}
+                  onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400"
+                />
+              </label>
+
+              <label className="block text-sm text-slate-300">
+                职位
+                <input
+                  type="text"
+                  value={form.title}
+                  onChange={(event) => setForm((prev) => ({ ...prev, title: event.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400"
+                />
+              </label>
+
+              <label className="block text-sm text-slate-300">
+                Email
+                <input
+                  type="email"
+                  value={form.email}
+                  onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400"
+                />
+              </label>
+            </div>
+
+            {errorMessage && (
+              <p className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+                {errorMessage}
+              </p>
+            )}
+            {successMessage && (
+              <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">
+                {successMessage}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={saving}
+              className="inline-flex rounded-xl border border-cyan-300/50 bg-cyan-500/15 px-5 py-2.5 text-sm font-medium text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {saving ? "保存中..." : "保存资料"}
+            </button>
+          </form>
+        )}
+      </div>
     </section>
   );
 }
