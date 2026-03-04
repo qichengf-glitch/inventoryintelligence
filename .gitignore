@@ -19,12 +19,18 @@ Thumbs.db
 
 # Next.js (frontend)
 frontend/.next/
+frontend/.next.cache-bak-*/
+frontend/.next.cache*/
 frontend/out/
 frontend/build/
 
 # Logs
 *.log
 npm-debug.log*
+
+# Python cache
+__pycache__/
+*.pyc
 
 # Optional: large data folder (uncomment if I&I_dataset is too big)
 # I&I_dataset/
