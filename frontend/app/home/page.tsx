@@ -6,20 +6,20 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 export default async function HomePage() {
   const supabase = createServerSupabaseClient();
   const {
-    data: { session },
-  } = await supabase.auth.getSession();
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  if (!session) {
+  if (!user) {
     redirect("/auth");
   }
 
   const { error: profileError } = await supabase.from("user_profiles").upsert(
     {
-      id: session.user.id,
-      email: session.user.email ?? null,
+      id: user.id,
+      email: user.email ?? null,
       name:
-        (session.user.user_metadata?.name as string | undefined) ||
-        (session.user.user_metadata?.full_name as string | undefined) ||
+        (user.user_metadata?.name as string | undefined) ||
+        (user.user_metadata?.full_name as string | undefined) ||
         null,
     },
     { onConflict: "id" }
@@ -30,8 +30,8 @@ export default async function HomePage() {
   }
 
   const displayName =
-    (session.user.user_metadata?.name as string | undefined) ||
-    (session.user.user_metadata?.full_name as string | undefined) ||
+    (user.user_metadata?.name as string | undefined) ||
+    (user.user_metadata?.full_name as string | undefined) ||
     "";
 
   return <HomeDashboard displayName={displayName} />;

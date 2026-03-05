@@ -15,6 +15,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: { zh: "首页", en: "Home" }, href: "/home", icon: "🏠" },
   { label: { zh: "数据中心", en: "Data Center" }, href: "/data-center", icon: "🌐" },
   { label: { zh: "分析", en: "Analysis" }, href: "/analysis", icon: "🖲️" },
+  { label: { zh: "库存预警中心", en: "Inventory Alert" }, href: "/alerts", icon: "🚨" },
   { label: { zh: "精益策略", en: "Lean Strategy" }, href: "/lean-strategy", icon: "🚥" },
   { label: { zh: "出入库管理", en: "In/Out" }, href: "/inout", icon: "🚚" },
   { label: { zh: "设置", en: "Settings" }, href: "/settings", icon: "⚙️" },

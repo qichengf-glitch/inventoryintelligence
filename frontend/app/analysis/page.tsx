@@ -44,12 +44,12 @@ export default function AnalysisPage() {
 
         <article className={CARD_BASE_CLASS}>
           <h2 className="text-lg font-semibold text-slate-100">
-            {lang === "zh" ? "补货建议" : "Replenishment Suggestions"}
+            {lang === "zh" ? "补货策略建议" : "Replenishment Strategy"}
           </h2>
           <p className="mt-2 text-sm text-slate-400">
             {lang === "zh"
-              ? "补货建议模块占位。"
-              : "Placeholder for replenishment recommendation logic."}
+              ? "补货策略与分层规则模块占位。"
+              : "Placeholder for replenishment strategy and policy recommendations."}
           </p>
           <span className="mt-5 inline-flex rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-400">
             {lang === "zh" ? "即将上线" : "Coming soon"}

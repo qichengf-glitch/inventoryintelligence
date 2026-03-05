@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseClient } from "@/lib/supabaseClient";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
+import { scopeGuard } from "@/lib/copilot/scopeGuard";
 
 type ForecastSummary = {
   sku?: string;
@@ -393,6 +394,18 @@ export async function POST(req: NextRequest) {
     const envModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
     const model = requestedModel && allowList.has(requestedModel) ? requestedModel : envModel;
     const resolvedScope: AssistantScope = scope === "home" ? "home" : "forecast";
+    if (resolvedScope === "forecast") {
+      const guard = scopeGuard("forecast", question);
+      if (!guard.allowed) {
+        return NextResponse.json({
+          answer: guard.message,
+          outOfScope: true,
+          redirectTo: guard.redirectTo,
+          scope: resolvedScope,
+          model,
+        });
+      }
+    }
     let dashboardContext: DashboardContext | undefined;
     try {
       dashboardContext = await collectDashboardContext(resolvedScope);

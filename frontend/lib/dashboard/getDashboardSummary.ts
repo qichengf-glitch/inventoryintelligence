@@ -53,8 +53,14 @@ type DashboardMonthlySummaryRow = {
 type StrictLatestMonthKpiTotals = {
   latestMonth: string | null;
   latestMonthRaw?: string | number | null;
+  previousMonth: string | null;
+  previousMonthRaw?: string | number | null;
   currentInventoryTotal: number;
+  previousInventoryTotal: number | null;
   monthlySalesTotal: number;
+  previousMonthlySalesTotal: number | null;
+  currentInventoryDeltaPercent: number | null;
+  monthlySalesDeltaPercent: number | null;
   sampledRows: number;
 };
 
@@ -131,6 +137,16 @@ function buildColumnCandidates(primaryColumn: string | undefined, fallbackColumn
   return Array.from(new Set(candidates));
 }
 
+function extractMissingColumnName(message: string) {
+  if (!message) return null;
+  const normalized = message.trim();
+  const quotedMatch = normalized.match(/column\s+["`\[]?([a-zA-Z0-9_]+)["`\]]?\s+does not exist/i);
+  if (quotedMatch?.[1]) return quotedMatch[1];
+  const qualifiedMatch = normalized.match(/column\s+[a-zA-Z0-9_]+\.(["`\[]?)([a-zA-Z0-9_]+)\1\s+does not exist/i);
+  if (qualifiedMatch?.[2]) return qualifiedMatch[2];
+  return null;
+}
+
 function toMonthFilterValue(value: unknown): string | number | null {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -163,6 +179,21 @@ function getMonthStartAndNext(latestMonth: string) {
     startDate,
     nextMonthDate,
   };
+}
+
+function resolveMonthTarget(rows: RawInventoryRow[]) {
+  for (const row of rows) {
+    const raw = row?.month;
+    const parsed = parseMonth(raw);
+    const filterValue = toMonthFilterValue(raw);
+    if (!parsed || filterValue == null) continue;
+    return {
+      raw,
+      month: parsed,
+      filterValue,
+    };
+  }
+  return null;
 }
 
 function readNullableNumber(row: RawInventoryRow, columns: string[]) {
@@ -471,8 +502,14 @@ function buildEmptyStrictLatestMonthKpiTotals(): StrictLatestMonthKpiTotals {
   return {
     latestMonth: null,
     latestMonthRaw: null,
+    previousMonth: null,
+    previousMonthRaw: null,
     currentInventoryTotal: 0,
+    previousInventoryTotal: null,
     monthlySalesTotal: 0,
+    previousMonthlySalesTotal: null,
+    currentInventoryDeltaPercent: null,
+    monthlySalesDeltaPercent: null,
     sampledRows: 0,
   };
 }
@@ -487,6 +524,61 @@ async function readStrictLatestMonthKpiTotals(
   const salesCandidates = buildColumnCandidates(salesColumn, SALES_VALUE_FALLBACK_COLUMNS);
   const monthlyTableRef = () =>
     schema ? supabase.schema(schema).from("inventory_monthly") : supabase.from("inventory_monthly");
+
+  const readMonthTotals = async (month: string, filterValue: string | number) => {
+    const localStockCandidates = [...stockCandidates];
+    const localSalesCandidates = [...salesCandidates];
+
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const selectColumns = buildSelect([
+        "month",
+        ...localStockCandidates,
+        ...localSalesCandidates,
+      ]);
+      let queryRes = await monthlyTableRef()
+        .select(selectColumns)
+        .eq("month", filterValue);
+
+      // Fallback for month fields stored as timestamp/text where strict equality may miss same-month rows.
+      if (!queryRes.error && ((queryRes.data as RawInventoryRow[] | null) ?? []).length === 0) {
+        const bounds = getMonthStartAndNext(month);
+        if (bounds) {
+          queryRes = await monthlyTableRef()
+            .select(selectColumns)
+            .gte("month", bounds.startDate)
+            .lt("month", bounds.nextMonthDate);
+        }
+      }
+
+      if (queryRes.error) {
+        const missing = extractMissingColumnName(queryRes.error.message);
+        if (missing) {
+          const stockIndex = localStockCandidates.indexOf(missing);
+          if (stockIndex >= 0 && localStockCandidates.length > 1) {
+            localStockCandidates.splice(stockIndex, 1);
+            continue;
+          }
+          const salesIndex = localSalesCandidates.indexOf(missing);
+          if (salesIndex >= 0 && localSalesCandidates.length > 1) {
+            localSalesCandidates.splice(salesIndex, 1);
+            continue;
+          }
+        }
+        return { error: queryRes.error.message, rows: [] as RawInventoryRow[], stock: 0, sales: 0 };
+      }
+
+      const rows = (queryRes.data || []) as RawInventoryRow[];
+      let stock = 0;
+      let sales = 0;
+      for (const row of rows) {
+        stock += readNumber(row, localStockCandidates);
+        sales += readNumber(row, localSalesCandidates);
+      }
+      return { error: null, rows, stock, sales };
+    }
+
+    return { error: "Failed to query month totals after retrying missing columns", rows: [] as RawInventoryRow[], stock: 0, sales: 0 };
+  };
 
   const latestMonthRes = await monthlyTableRef()
     .select("month")
@@ -509,50 +601,19 @@ async function readStrictLatestMonthKpiTotals(
     return fallback;
   }
 
-  let latestMonthRaw: unknown = null;
-  let latestMonth: string | null = null;
-  let monthFilterValue: string | number | null = null;
-
-  for (const row of latestMonthRows) {
-    const raw = row?.month;
-    const parsed = parseMonth(raw);
-    const filterValue = toMonthFilterValue(raw);
-    if (!parsed || filterValue == null) continue;
-    latestMonthRaw = raw;
-    latestMonth = parsed;
-    monthFilterValue = filterValue;
-    break;
-  }
-
-  if (!latestMonth || monthFilterValue == null) {
+  const latestMonthTarget = resolveMonthTarget(latestMonthRows);
+  if (!latestMonthTarget) {
     return fallback;
   }
+  const latestMonth = latestMonthTarget.month;
+  const latestMonthRaw = latestMonthTarget.raw;
+  const monthFilterValue = latestMonthTarget.filterValue;
 
-  const selectColumns = buildSelect([
-    "month",
-    ...stockCandidates,
-    ...salesCandidates,
-  ]);
-
-  let latestRowsRes = await monthlyTableRef()
-    .select(selectColumns)
-    .eq("month", monthFilterValue);
-
-  // Fallback for month fields stored as timestamp/text where strict equality may miss same-month rows.
-  if (!latestRowsRes.error && ((latestRowsRes.data as RawInventoryRow[] | null) ?? []).length === 0) {
-    const bounds = getMonthStartAndNext(latestMonth);
-    if (bounds) {
-      latestRowsRes = await monthlyTableRef()
-        .select(selectColumns)
-        .gte("month", bounds.startDate)
-        .lt("month", bounds.nextMonthDate);
-    }
-  }
-
-  if (latestRowsRes.error) {
+  const latestTotals = await readMonthTotals(latestMonth, monthFilterValue);
+  if (latestTotals.error) {
     console.warn(
       "[dashboard/summary] failed to read latest-month rows from inventory_monthly:",
-      latestRowsRes.error.message
+      latestTotals.error
     );
     return {
       ...fallback,
@@ -561,13 +622,44 @@ async function readStrictLatestMonthKpiTotals(
     };
   }
 
-  const rows = (latestRowsRes.data || []) as RawInventoryRow[];
-  let currentInventoryTotal = 0;
-  let monthlySalesTotal = 0;
+  const rows = latestTotals.rows;
+  const currentInventoryTotal = latestTotals.stock;
+  const monthlySalesTotal = latestTotals.sales;
 
-  for (const row of rows) {
-    currentInventoryTotal += readNumber(row, stockCandidates);
-    monthlySalesTotal += readNumber(row, salesCandidates);
+  let previousMonth: string | null = null;
+  let previousMonthRaw: string | number | null = null;
+  let previousInventoryTotal: number | null = null;
+  let previousMonthlySalesTotal: number | null = null;
+
+  const previousMonthRes = await monthlyTableRef()
+    .select("month")
+    .not("month", "is", null)
+    .lt("month", monthFilterValue as any)
+    .order("month", { ascending: false })
+    .limit(50);
+
+  if (previousMonthRes.error) {
+    console.warn(
+      "[dashboard/summary] failed to read previous month from inventory_monthly:",
+      previousMonthRes.error.message
+    );
+  } else {
+    const previousMonthRows = (previousMonthRes.data || []) as RawInventoryRow[];
+    const previousMonthTarget = resolveMonthTarget(previousMonthRows);
+    if (previousMonthTarget) {
+      previousMonth = previousMonthTarget.month;
+      previousMonthRaw = toMonthFilterValue(previousMonthTarget.raw);
+      const previousTotals = await readMonthTotals(previousMonthTarget.month, previousMonthTarget.filterValue);
+      if (previousTotals.error) {
+        console.warn(
+          "[dashboard/summary] failed to read previous-month rows from inventory_monthly:",
+          previousTotals.error
+        );
+      } else {
+        previousInventoryTotal = previousTotals.stock;
+        previousMonthlySalesTotal = previousTotals.sales;
+      }
+    }
   }
 
   if (process.env.NODE_ENV !== "production") {
@@ -579,8 +671,20 @@ async function readStrictLatestMonthKpiTotals(
   return {
     latestMonth,
     latestMonthRaw: toMonthFilterValue(latestMonthRaw),
+    previousMonth,
+    previousMonthRaw,
     currentInventoryTotal,
+    previousInventoryTotal,
     monthlySalesTotal,
+    previousMonthlySalesTotal,
+    currentInventoryDeltaPercent:
+      previousInventoryTotal == null
+        ? null
+        : calcPercentDelta(currentInventoryTotal, previousInventoryTotal),
+    monthlySalesDeltaPercent:
+      previousMonthlySalesTotal == null
+        ? null
+        : calcPercentDelta(monthlySalesTotal, previousMonthlySalesTotal),
     sampledRows: rows.length,
   };
 }
@@ -603,12 +707,16 @@ function applyStrictLatestMonthKpiTotals(
       return {
         ...item,
         value: strictTotals.currentInventoryTotal,
+        delta: strictTotals.currentInventoryDeltaPercent,
+        subtext: strictTotals.previousMonth ? `vs ${strictTotals.previousMonth}` : item.subtext,
       };
     }
     if (item.id === "kpi_4") {
       return {
         ...item,
         value: strictTotals.monthlySalesTotal,
+        delta: strictTotals.monthlySalesDeltaPercent,
+        subtext: strictTotals.latestMonth ? `In ${strictTotals.latestMonth}` : item.subtext,
       };
     }
     return item;
