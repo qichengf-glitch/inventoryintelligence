@@ -1,6 +1,7 @@
 import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
 import { normalizeSku } from "@/lib/inventory/status";
 import type { AlertItem, AlertsResponse, AlertStatus } from "@/lib/alerts/types";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
 export const DEFAULT_SAFETY_STOCK = 10;
 export const DEFAULT_HIGH_STOCK = 200;
@@ -11,6 +12,7 @@ type InventoryAlertConfig = {
   skuCol: string;
   onHandCol: string;
   monthCol?: string;
+  salesCol?: string;
 };
 
 type ResolvedMonthTarget = {
@@ -159,15 +161,26 @@ async function fetchInventoryRows(
     : supabase.from(config.inventoryTableName);
 
   const baseSelect = buildSelect([config.skuCol, config.onHandCol, config.monthCol]);
-  let queryRes = await tableRef.select(baseSelect).eq(config.monthCol as string, filterValue);
+  const salesCol = config.salesCol ?? "month_sales";
+  const stockCol = config.onHandCol;
+
+  let queryRes = await excludeAllZeroRows(
+    tableRef.select(baseSelect).eq(config.monthCol as string, filterValue),
+    salesCol,
+    stockCol
+  );
 
   if (!queryRes.error && ((queryRes.data as Array<Record<string, unknown>> | null) ?? []).length === 0) {
     const bounds = getMonthStartAndNext(month);
     if (bounds) {
-      queryRes = await tableRef
-        .select(baseSelect)
-        .gte(config.monthCol as string, bounds.startDate)
-        .lt(config.monthCol as string, bounds.nextMonthDate);
+      queryRes = await excludeAllZeroRows(
+        tableRef
+          .select(baseSelect)
+          .gte(config.monthCol as string, bounds.startDate)
+          .lt(config.monthCol as string, bounds.nextMonthDate),
+        salesCol,
+        stockCol
+      );
     }
   }
 
@@ -212,6 +225,7 @@ export function resolveInventoryAlertConfig(): InventoryAlertConfig {
     skuCol: inventory.skuColumn,
     onHandCol: inventory.stockColumn,
     monthCol: inventory.timeColumn ?? inventory.monthColumn,
+    salesCol: inventory.salesColumn,
   };
 }
 

@@ -3,6 +3,7 @@ import { createSupabaseClient } from "@/lib/supabaseClient";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
 import { scopeGuard } from "@/lib/copilot/scopeGuard";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
 type ForecastSummary = {
   sku?: string;
@@ -185,12 +186,16 @@ async function collectDashboardContext(scope: AssistantScope): Promise<Dashboard
   const rows: any[] = [];
 
   while (rows.length < maxRows) {
-    const { data, error } = await tableRef
-      .select(
-        buildSelect([skuColumn, timeKey, salesColumn, stockColumn, "safety_stock", "category", "batch", "remark"])
-      )
-      .order(timeKey, { ascending: false })
-      .range(offset, offset + pageSize - 1);
+    const { data, error } = await excludeAllZeroRows(
+      tableRef
+        .select(
+          buildSelect([skuColumn, timeKey, salesColumn, stockColumn, "safety_stock", "category", "batch", "remark"])
+        )
+        .order(timeKey, { ascending: false })
+        .range(offset, offset + pageSize - 1),
+      salesColumn,
+      stockColumn
+    );
 
     if (error) throw new Error(`Dashboard context query failed: ${error.message}`);
     const chunk = data || [];

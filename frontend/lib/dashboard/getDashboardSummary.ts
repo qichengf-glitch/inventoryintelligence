@@ -1,4 +1,5 @@
 import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 import { createSupabaseClient } from "@/lib/supabaseClient";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import {
@@ -802,16 +803,22 @@ async function tryReadPrecomputedDashboardSummary(
 
 async function fetchRowsFromTable(
   tableRef: any,
-  timeKey: string
+  timeKey: string,
+  salesCol: string = "month_sales",
+  stockCol: string = "month_end_stock"
 ): Promise<RawInventoryRow[]> {
   const rows: RawInventoryRow[] = [];
   let offset = 0;
 
   while (rows.length < MAX_ROWS) {
-    const { data, error } = await tableRef
-      .select(buildSelect(["*"]))
-      .order(timeKey, { ascending: false })
-      .range(offset, offset + PAGE_SIZE - 1);
+    const { data, error } = await excludeAllZeroRows(
+      tableRef
+        .select(buildSelect(["*"]))
+        .order(timeKey, { ascending: false })
+        .range(offset, offset + PAGE_SIZE - 1),
+      salesCol,
+      stockCol
+    );
 
     if (error) {
       throw new Error(error.message);
@@ -916,7 +923,7 @@ async function tryResolveRowsFromCandidates(
       const tableRef = candidate.schema
         ? supabase.schema(candidate.schema).from(candidate.table)
         : supabase.from(candidate.table);
-      const rows = await fetchRowsFromTable(tableRef, candidate.timeColumn);
+      const rows = await fetchRowsFromTable(tableRef, candidate.timeColumn, candidate.salesColumn, candidate.stockColumn);
 
       if (rows.length === 0) {
         console.info(

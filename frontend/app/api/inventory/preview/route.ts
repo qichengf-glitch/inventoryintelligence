@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseClient } from "@/lib/supabaseClient";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { getInventoryConfig } from "@/lib/inventoryConfig";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -69,18 +70,22 @@ export async function GET(req: NextRequest) {
       ? Math.min(MAX_LIMIT, Math.max(1, Math.trunc(limitRaw)))
       : DEFAULT_LIMIT;
 
-    const { schema } = getInventoryConfig();
+    const { schema, salesColumn, stockColumn } = getInventoryConfig();
     const { supabase, source } = await getSupabaseForPreview();
     const tableRef = schema
       ? supabase.schema(schema).from("inventory_monthly")
       : supabase.from("inventory_monthly");
 
-    let query = tableRef
-      .select("*")
-      .ilike("sku", sku)
-      .order("month", { ascending: false })
-      .order("sku", { ascending: true })
-      .limit(limit);
+    let query = excludeAllZeroRows(
+      tableRef
+        .select("*")
+        .ilike("sku", sku)
+        .order("month", { ascending: false })
+        .order("sku", { ascending: true })
+        .limit(limit),
+      salesColumn,
+      stockColumn
+    );
 
     if (parsedMonth) {
       query = query.eq("month", monthToDateStart(parsedMonth));

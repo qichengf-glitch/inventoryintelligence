@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { getInventoryConfig } from "@/lib/inventoryConfig";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,7 +31,7 @@ function parseMonth(value: unknown): string | null {
 
 export async function GET() {
   try {
-    const { schema, table, skuColumn, stockColumn, timeColumn } = getInventoryConfig();
+    const { schema, table, skuColumn, stockColumn, salesColumn, timeColumn } = getInventoryConfig();
     const supabase = createSupabaseAdminClient();
     const monthCol = timeColumn ?? "month";
     const outCol = "month_out";
@@ -38,10 +39,14 @@ export async function GET() {
     const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
 
     // Fetch last 6 months of data to detect slow movers
-    const { data: allData, error } = await tableRef
-      .select([skuColumn, monthCol, stockColumn, outCol].join(", "))
-      .order(monthCol, { ascending: false })
-      .limit(50000);
+    const { data: allData, error } = await excludeAllZeroRows(
+      tableRef
+        .select([skuColumn, monthCol, stockColumn, outCol].join(", "))
+        .order(monthCol, { ascending: false })
+        .limit(50000),
+      salesColumn,
+      stockColumn
+    );
 
     if (error) throw new Error(error.message);
 

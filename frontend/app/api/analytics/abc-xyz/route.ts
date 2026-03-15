@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { getInventoryConfig } from "@/lib/inventoryConfig";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,7 +47,7 @@ function stdDev(values: number[], mean: number): number {
 
 export async function GET() {
   try {
-    const { schema, table, skuColumn, salesColumn, timeColumn } = getInventoryConfig();
+    const { schema, table, skuColumn, salesColumn, stockColumn, timeColumn } = getInventoryConfig();
     const supabase = createSupabaseAdminClient();
 
     const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
@@ -56,9 +57,13 @@ export async function GET() {
     const allRows: Array<Record<string, unknown>> = [];
 
     while (true) {
-      const { data, error } = await tableRef
-        .select([skuColumn, salesColumn, timeColumn ?? "month"].join(", "))
-        .range(offset, offset + PAGE - 1);
+      const { data, error } = await excludeAllZeroRows(
+        tableRef
+          .select([skuColumn, salesColumn, timeColumn ?? "month"].join(", "))
+          .range(offset, offset + PAGE - 1),
+        salesColumn,
+        stockColumn
+      );
       if (error) throw new Error(error.message);
       const chunk = (data ?? []) as unknown as Array<Record<string, unknown>>;
       allRows.push(...chunk);

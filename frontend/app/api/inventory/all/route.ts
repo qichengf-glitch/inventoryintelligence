@@ -7,6 +7,7 @@ import {
   computeInventoryStatus,
   normalizeSku,
 } from "@/lib/inventory/status";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -218,15 +219,20 @@ async function fetchMonthlyRowsAll(
     ? supabase.schema(schema).from("inventory_monthly")
     : supabase.from("inventory_monthly");
 
+  const { salesColumn, stockColumn } = getInventoryConfig();
   const rows: Array<Record<string, unknown>> = [];
   let offset = 0;
 
   while (rows.length < MAX_ROWS) {
-    const { data, error } = await monthlyRef
-      .select("*")
-      .order("month", { ascending: false })
-      .order("sku", { ascending: true })
-      .range(offset, offset + PAGE_SIZE - 1);
+    const { data, error } = await excludeAllZeroRows(
+      monthlyRef
+        .select("*")
+        .order("month", { ascending: false })
+        .order("sku", { ascending: true })
+        .range(offset, offset + PAGE_SIZE - 1),
+      salesColumn,
+      stockColumn
+    );
 
     if (error) {
       throw new Error(`Failed to read inventory_monthly rows: ${error.message}`);

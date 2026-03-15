@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseClient } from "@/lib/supabaseClient";
 import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
 export async function GET(req: NextRequest) {
   try {
@@ -50,14 +51,18 @@ export async function GET(req: NextRequest) {
     };
 
     const supabase = createSupabaseClient();
-    const { schema, table, skuColumn, timeColumn, salesColumn } = getInventoryConfig();
+    const { schema, table, skuColumn, timeColumn, salesColumn, stockColumn } = getInventoryConfig();
     if (!timeColumn) {
       return NextResponse.json({ error: "Time column is not configured" }, { status: 500 });
     }
     const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
     const selectColumns = buildSelect([timeColumn, salesColumn, skuColumn]);
     console.log("[api/demand] querying:", { sku, columns: selectColumns, table });
-    const { data, error } = await tableRef.select(selectColumns).eq(skuColumn, sku);
+    const { data, error } = await excludeAllZeroRows(
+      tableRef.select(selectColumns).eq(skuColumn, sku),
+      salesColumn,
+      stockColumn
+    );
 
     if (error) {
       console.error("[api/demand] supabase error", { schema, table, message: error.message });
@@ -76,7 +81,7 @@ export async function GET(req: NextRequest) {
     const acc = new Map<string, number>();
     const debugAccum: Array<{ month: string; sales: number; t: string; rawTime: unknown }> = [];
     
-    (data || []).forEach((row) => {
+    (data || []).forEach((row: any) => {
       const month = parseMonth((row as any)?.[timeColumn]) ?? "";
       if (!month) {
         console.warn("[api/demand] failed to parse month from:", (row as any)?.[timeColumn]);

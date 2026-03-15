@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseClient } from "@/lib/supabaseClient";
 import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
 export async function GET(req: NextRequest) {
   try {
@@ -50,7 +51,7 @@ export async function GET(req: NextRequest) {
     };
 
     const supabase = createSupabaseClient();
-    const { schema, table, skuColumn, timeColumn, stockColumn } = getInventoryConfig();
+    const { schema, table, skuColumn, timeColumn, stockColumn, salesColumn } = getInventoryConfig();
     if (!timeColumn) {
       return NextResponse.json({ error: "Time column is not configured" }, { status: 500 });
     }
@@ -58,7 +59,11 @@ export async function GET(req: NextRequest) {
     // 拉取该 SKU 的所有行，找到最新月份
     const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
     const selectColumns = buildSelect([timeColumn, stockColumn, skuColumn]);
-    const { data, error } = await tableRef.select(selectColumns).eq(skuColumn, sku);
+    const { data, error } = await excludeAllZeroRows(
+      tableRef.select(selectColumns).eq(skuColumn, sku),
+      salesColumn,
+      stockColumn
+    );
 
     if (error) {
       console.error("[api/currentStock] supabase error", { schema, table, message: error.message });
@@ -66,21 +71,21 @@ export async function GET(req: NextRequest) {
     }
 
     const rows = (data || [])
-      .map((row) => {
-        const month = parseMonth((row as any)?.[timeColumn]) ?? "";
-        const stock = Number((row as any)?.[stockColumn] ?? 0);
+      .map((row: any) => {
+        const month = parseMonth(row?.[timeColumn]) ?? "";
+        const stock = Number(row?.[stockColumn] ?? 0);
         return { month, stock: Number.isFinite(stock) ? stock : 0 };
       })
-      .filter((r) => r.month);
+      .filter((r: { month: string; stock: number }) => r.month);
 
     if (!rows.length) {
       return NextResponse.json({ error: "not found" }, { status: 404 });
     }
 
-    const latestMonth = rows.map((r) => r.month).sort().at(-1)!;
+    const latestMonth = rows.map((r: { month: string }) => r.month).sort().at(-1)!;
     const currentStock = rows
-      .filter((r) => r.month === latestMonth)
-      .reduce((sum, r) => sum + r.stock, 0);
+      .filter((r: { month: string; stock: number }) => r.month === latestMonth)
+      .reduce((sum: number, r: { month: string; stock: number }) => sum + r.stock, 0);
 
     return NextResponse.json({ sku, month: latestMonth, currentStock });
   } catch (err) {

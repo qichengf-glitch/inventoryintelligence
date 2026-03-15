@@ -1,20 +1,22 @@
 import { NextResponse } from "next/server";
 import { createSupabaseClient } from "@/lib/supabaseClient";
 import { getInventoryConfig } from "@/lib/inventoryConfig";
+import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
 export async function GET() {
   try {
     const supabase = createSupabaseClient();
-    const { schema, table, skuColumn } = getInventoryConfig();
+    const { schema, table, skuColumn, salesColumn, stockColumn } = getInventoryConfig();
     console.log(">>> API /skus querying table:", table);
     const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
     const pageSize = 1000;
     const allRows: any[] = [];
     for (let from = 0; ; from += pageSize) {
-      const { data, error } = await tableRef
-        .select(skuColumn)
-        .order(skuColumn)
-        .range(from, from + pageSize - 1);
+      const { data, error } = await excludeAllZeroRows(
+        tableRef.select(skuColumn).order(skuColumn).range(from, from + pageSize - 1),
+        salesColumn,
+        stockColumn
+      );
       if (error) {
         console.error("[api/skus] supabase error", { schema, table, message: error.message });
         return NextResponse.json({ error: error.message }, { status: 500 });
