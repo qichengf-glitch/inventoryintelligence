@@ -1,11 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 
 import ScopedCopilotWidget from "@/components/copilot/ScopedCopilotWidget";
 import { useLanguage } from "@/components/LanguageProvider";
 import type { AlertItem, AlertsResponse } from "@/lib/alerts/types";
 import { DEFAULT_HIGH_STOCK, DEFAULT_SAFETY_STOCK } from "@/lib/alerts/computeAlerts";
+
+type SlowMover = {
+  sku: string;
+  current_stock: number;
+  months_without_movement: number;
+  last_out_month: string | null;
+  avg_monthly_out: number;
+};
 
 type ViewKey = "oos" | "low" | "high";
 
@@ -223,6 +232,10 @@ export default function AlertsPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const [slowMovers, setSlowMovers] = useState<SlowMover[]>([]);
+  const [slowMoversLoading, setSlowMoversLoading] = useState(true);
+  const [slowMoversSearch, setSlowMoversSearch] = useState("");
+
   const loadAlerts = async (silent = false) => {
     if (silent) setRefreshing(true);
     else setLoading(true);
@@ -248,6 +261,63 @@ export default function AlertsPage() {
   useEffect(() => {
     void loadAlerts();
   }, []);
+
+  useEffect(() => {
+    const loadSlow = async () => {
+      setSlowMoversLoading(true);
+      try {
+        const res = await fetch("/api/inventory/slow-movers", { cache: "no-store" });
+        const data = await res.json();
+        setSlowMovers(data.slow_movers ?? []);
+      } catch {
+        setSlowMovers([]);
+      } finally {
+        setSlowMoversLoading(false);
+      }
+    };
+    void loadSlow();
+  }, []);
+
+  const exportAlertsToExcel = () => {
+    if (!alerts) return;
+    const allItems = [
+      ...alerts.views.oos.map((i) => ({ ...i, category: "OOS" })),
+      ...alerts.views.low.map((i) => ({ ...i, category: "LOW" })),
+      ...alerts.views.high.map((i) => ({ ...i, category: "HIGH" })),
+    ];
+    const ws = XLSX.utils.json_to_sheet(
+      allItems.map((i) => ({
+        SKU: i.sku,
+        Status: i.status,
+        OnHand: i.on_hand,
+        SafetyStock: i.safety_stock,
+        HighStock: i.high_stock,
+        ReplenishQty: i.suggested_replenish_qty,
+        Action: i.suggested_action,
+      }))
+    );
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Alerts");
+    if (slowMovers.length > 0) {
+      const ws2 = XLSX.utils.json_to_sheet(
+        slowMovers.map((s) => ({
+          SKU: s.sku,
+          CurrentStock: s.current_stock,
+          MonthsWithoutMovement: s.months_without_movement,
+          LastOutMonth: s.last_out_month ?? "—",
+          AvgMonthlyOut: s.avg_monthly_out,
+        }))
+      );
+      XLSX.utils.book_append_sheet(wb, ws2, "SlowMovers");
+    }
+    XLSX.writeFile(wb, `inventory-alerts-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const filteredSlowMovers = useMemo(() => {
+    const q = slowMoversSearch.trim().toLowerCase();
+    if (!q) return slowMovers;
+    return slowMovers.filter((s) => s.sku.toLowerCase().includes(q));
+  }, [slowMovers, slowMoversSearch]);
 
   const openThresholdEditor = (item: AlertItem) => {
     setEditing(item);
@@ -345,9 +415,20 @@ export default function AlertsPage() {
     <div className="space-y-5 pb-16">
       <section className="rounded-2xl border border-slate-800 bg-slate-900/70 px-5 py-4">
         <p className="text-xs uppercase tracking-[0.15em] text-slate-400">Inventory Alert</p>
-        <h1 className="mt-1 text-2xl font-semibold text-slate-100">
-          {lang === "zh" ? "库存预警中心" : "Inventory Alert Center"}
-        </h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="mt-1 text-2xl font-semibold text-slate-100">
+            {lang === "zh" ? "库存预警中心" : "Inventory Alert Center"}
+          </h1>
+          {alerts && (
+            <button
+              type="button"
+              onClick={exportAlertsToExcel}
+              className="rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-4 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/25 transition-colors"
+            >
+              {lang === "zh" ? "导出 Excel" : "Export Excel"}
+            </button>
+          )}
+        </div>
         <p className="mt-1 text-sm text-slate-400">
           {lang === "zh"
             ? "基于安全库存阈值的缺货/低库存/高库存预警（Strategy A）。"
@@ -493,6 +574,76 @@ export default function AlertsPage() {
           </div>
         </div>
       )}
+
+      {/* Slow Movers Section */}
+      <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div>
+            <h3 className="text-base font-semibold text-slate-100">
+              {lang === "zh" ? "滞销预警 (Slow Movers)" : "Slow Movers Alert"}
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {lang === "zh"
+                ? "有库存但连续 2+ 个月无出库的 SKU"
+                : "SKUs with stock but zero outbound for 2+ consecutive months"}
+            </p>
+          </div>
+          <div className="flex gap-2 items-center">
+            <span className="rounded-full border border-amber-400/40 bg-amber-500/15 px-2.5 py-0.5 text-xs font-semibold text-amber-200">
+              {slowMovers.length} SKU
+            </span>
+            <input
+              value={slowMoversSearch}
+              onChange={(e) => setSlowMoversSearch(e.target.value)}
+              placeholder={lang === "zh" ? "搜索 SKU" : "Search SKU"}
+              className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 outline-none focus:border-cyan-400 w-36"
+            />
+          </div>
+        </div>
+
+        {slowMoversLoading ? (
+          <div className="space-y-2 animate-pulse">
+            {Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-8 rounded-lg bg-slate-800/50" />)}
+          </div>
+        ) : filteredSlowMovers.length === 0 ? (
+          <p className="py-4 text-center text-sm text-slate-500">
+            {lang === "zh" ? "暂无滞销 SKU" : "No slow movers detected"}
+          </p>
+        ) : (
+          <div className="max-h-[320px] overflow-auto rounded-xl border border-slate-800">
+            <table className="min-w-full text-sm">
+              <thead className="sticky top-0 bg-slate-900/95 text-xs uppercase tracking-[0.08em] text-slate-400">
+                <tr>
+                  <th className="px-3 py-2 text-left">SKU</th>
+                  <th className="px-3 py-2 text-right">{lang === "zh" ? "当前库存" : "Stock"}</th>
+                  <th className="px-3 py-2 text-right">{lang === "zh" ? "滞销月数" : "Idle Months"}</th>
+                  <th className="px-3 py-2 text-left">{lang === "zh" ? "最后出库月" : "Last Out Month"}</th>
+                  <th className="px-3 py-2 text-right">{lang === "zh" ? "月均出库" : "Avg Out/Mo"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredSlowMovers.map((s) => (
+                  <tr key={s.sku} className="border-t border-slate-800 text-slate-200 hover:bg-slate-800/30">
+                    <td className="px-3 py-2 font-medium">{s.sku}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{s.current_stock.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-right">
+                      <span className={`inline-flex rounded-md border px-2 py-0.5 text-xs ${
+                        s.months_without_movement >= 3
+                          ? "border-red-400/40 bg-red-500/15 text-red-200"
+                          : "border-amber-400/40 bg-amber-500/15 text-amber-200"
+                      }`}>
+                        {s.months_without_movement}mo
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-slate-400">{s.last_out_month ?? "—"}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-400">{s.avg_monthly_out}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <ScopedCopilotWidget
         endpoint="/api/copilot/alerts"
