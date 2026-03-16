@@ -28,6 +28,7 @@ export type ObsolescenceResponse = {
   items: ObsolescenceItem[];
   summary: ObsolescenceSummary;
   as_of: string;
+  snapshot_month: string;
 };
 
 // Strip leading non-digits, take first 4 digits as YYMM
@@ -71,13 +72,24 @@ export async function GET() {
       }
     }
 
-    // Fetch all inventory rows with batch
+    // Find the latest month snapshot first
     const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
+    const { data: maxData, error: maxError } = await (schema ? supabase.schema(schema).from(table) : supabase.from(table))
+      .select(timeColumn)
+      .order(timeColumn, { ascending: false })
+      .limit(1)
+      .single();
+    if (maxError) throw new Error(maxError.message);
+    const latestMonth = String((maxData as Record<string, unknown>)[timeColumn] ?? "").trim();
+    if (!latestMonth) throw new Error("No data found");
+
+    // Fetch only the latest month rows with batch
     const PAGE = 10000;
     const allRows: Array<Record<string, unknown>> = [];
     for (let from = 0; ; from += PAGE) {
       const { data, error } = await tableRef
         .select(`${skuColumn}, batch, ${timeColumn}, ${stockColumn}`)
+        .eq(timeColumn, latestMonth)
         .not("batch", "is", null)
         .neq("batch", "")
         .range(from, from + PAGE - 1);
@@ -88,9 +100,9 @@ export async function GET() {
       if (data.length < PAGE) break;
     }
 
-    // For each (sku, batch) keep only the latest time row
+    // For each (sku, batch) deduplicate (there should be one per pair in a single month)
     const key = (sku: string, batch: string) => `${sku}||${batch}`;
-    type BestRow = { sku: string; batch: string; time: string; stock: number };
+    type BestRow = { sku: string; batch: string; stock: number };
     const best = new Map<string, BestRow>();
 
     for (const row of allRows) {
@@ -99,18 +111,17 @@ export async function GET() {
       if (!sku || !batch) continue;
 
       const stock = Number(row[stockColumn] ?? 0);
-      const rawTime = row[timeColumn as string] ?? "";
-      const time = String(rawTime).trim();
-
       const k = key(sku, batch);
       const prev = best.get(k);
-      if (!prev || time > prev.time) {
-        best.set(k, { sku, batch, time, stock });
+      if (!prev || stock > prev.stock) {
+        best.set(k, { sku, batch, stock });
       }
     }
 
     const today = new Date();
     const items: ObsolescenceItem[] = [];
+    // also expose latest month in response
+    const snapshotMonth = latestMonth;
 
     for (const { sku, batch, stock } of best.values()) {
       if (stock <= 0) continue;
@@ -160,7 +171,7 @@ export async function GET() {
       summary[item.risk_tier].total_capital += item.capital ?? 0;
     }
 
-    return NextResponse.json<ObsolescenceResponse>({ items, summary, as_of: today.toISOString() });
+    return NextResponse.json<ObsolescenceResponse>({ items, summary, as_of: today.toISOString(), snapshot_month: snapshotMonth });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed" },

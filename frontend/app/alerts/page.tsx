@@ -51,6 +51,13 @@ function statusBadgeClass(status: AlertItem["status"]) {
   return VIEW_META.high.badgeClass;
 }
 
+function statusLabel(status: AlertItem["status"], lang: string) {
+  if (lang !== "zh") return status;
+  if (status === "OOS") return "缺货";
+  if (status === "LOW") return "低库存";
+  return "高库存";
+}
+
 function CountCard({
   label,
   value,
@@ -93,7 +100,7 @@ function TopListCard({
               <span className="truncate text-slate-300">OnHand {item.on_hand}</span>
               <span className="text-slate-400">SS {item.safety_stock}</span>
               <span className={`inline-flex justify-center rounded-md border px-1 py-0.5 ${statusBadgeClass(item.status)}`}>
-                {item.status}
+                {statusLabel(item.status, lang)}
               </span>
             </div>
           ))
@@ -173,7 +180,7 @@ function AlertWindow({
                   <td className="px-3 py-2">{item.high_stock}</td>
                   <td className="px-3 py-2">
                     <span className={`inline-flex rounded-md border px-2 py-0.5 text-xs ${statusBadgeClass(item.status)}`}>
-                      {item.status}
+                      {statusLabel(item.status, lang)}
                     </span>
                   </td>
                   <td className="px-3 py-2">{item.suggested_replenish_qty}</td>

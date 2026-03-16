@@ -56,8 +56,7 @@ function fmt(n: number) {
 }
 
 function fmtCurrency(n: number) {
-  if (n >= 1_000_000) return `¥${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 10_000) return `¥${(n / 10_000).toFixed(1)}万`;
+  if (n >= 10_000) return `¥${(n / 10_000).toFixed(2)}万`;
   return `¥${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 }
 
@@ -166,6 +165,11 @@ export default function ObsolescencePage() {
             ? "依据批号入库日期，自动识别库龄风险并量化占用资金"
             : "Identifies aging inventory by batch inbound date and quantifies capital tied up"}
         </p>
+        {data && (
+          <p className="mt-2 text-xs text-slate-500">
+            {lang === "zh" ? `数据快照：${data.snapshot_month}` : `Snapshot month: ${data.snapshot_month}`}
+          </p>
+        )}
       </section>
 
       {loading ? (
