@@ -73,6 +73,9 @@ export default function LeanStrategyPage() {
   const [filterAbc, setFilterAbc] = useState<AbcClass | "">("");
   const [filterXyz, setFilterXyz] = useState<XyzClass | "">("");
   const [sortBy, setSortBy] = useState<"total_sales" | "cov" | "sku">("total_sales");
+  const [aiReport, setAiReport] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async () => {
@@ -91,6 +94,29 @@ export default function LeanStrategyPage() {
     };
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!data || data.total_skus === 0) return;
+    const generate = async () => {
+      setAiLoading(true);
+      setAiError(null);
+      try {
+        const res = await fetch("/api/ai/abc-xyz-report", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ matrix: data.matrix, total_skus: data.total_skus, lang }),
+        });
+        const json = await res.json();
+        if (!res.ok) throw new Error(json.error ?? "Failed");
+        setAiReport(json.report as string);
+      } catch (err) {
+        setAiError(err instanceof Error ? err.message : "Failed to generate report");
+      } finally {
+        setAiLoading(false);
+      }
+    };
+    void generate();
+  }, [data, lang]);
 
   const filteredRows = useMemo(() => {
     if (!data) return [];
@@ -183,6 +209,67 @@ export default function LeanStrategyPage() {
           </div>
         </div>
       </section>
+
+      {/* AI Report */}
+      {(aiLoading || aiReport || aiError) && (
+        <section className={CARD}>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-cyan-500/20 border border-cyan-400/40 text-cyan-300 text-xs">AI</span>
+            <h2 className="text-sm font-semibold text-slate-100">
+              {lang === "zh" ? "AI 分析报告" : "AI Analysis Report"}
+            </h2>
+            {aiLoading && (
+              <span className="ml-auto text-xs text-slate-500 animate-pulse">
+                {lang === "zh" ? "正在生成…" : "Generating…"}
+              </span>
+            )}
+          </div>
+
+          {aiLoading && (
+            <div className="space-y-2">
+              <div className="h-3 w-full rounded bg-slate-800 animate-pulse" />
+              <div className="h-3 w-5/6 rounded bg-slate-800 animate-pulse" />
+              <div className="h-3 w-4/5 rounded bg-slate-800 animate-pulse" />
+              <div className="h-3 w-full rounded bg-slate-800 animate-pulse" />
+              <div className="h-3 w-3/4 rounded bg-slate-800 animate-pulse" />
+            </div>
+          )}
+
+          {aiError && !aiLoading && (
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-red-300">{aiError}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!data) return;
+                  setAiReport(null);
+                  setAiError(null);
+                  setAiLoading(true);
+                  fetch("/api/ai/abc-xyz-report", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ matrix: data.matrix, total_skus: data.total_skus, lang }),
+                  })
+                    .then((r) => r.json())
+                    .then((j) => {
+                      if (j.error) throw new Error(j.error);
+                      setAiReport(j.report as string);
+                    })
+                    .catch((e) => setAiError(e instanceof Error ? e.message : "Failed"))
+                    .finally(() => setAiLoading(false));
+                }}
+                className="text-xs text-cyan-400 hover:text-cyan-200 border border-slate-700 rounded-md px-2 py-1 ml-3 shrink-0"
+              >
+                {lang === "zh" ? "重试" : "Retry"}
+              </button>
+            </div>
+          )}
+
+          {aiReport && !aiLoading && (
+            <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{aiReport}</p>
+          )}
+        </section>
+      )}
 
       {/* 3×3 Matrix */}
       {data && (
