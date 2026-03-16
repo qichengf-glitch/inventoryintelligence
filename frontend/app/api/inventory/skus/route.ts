@@ -7,7 +7,6 @@ export async function GET() {
   try {
     const supabase = createSupabaseClient();
     const { schema, table, skuColumn, salesColumn, stockColumn } = getInventoryConfig();
-    console.log(">>> API /skus querying table:", table);
     const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
     const pageSize = 1000;
     const allRows: any[] = [];

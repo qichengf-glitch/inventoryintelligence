@@ -136,12 +136,6 @@ export async function POST(req: NextRequest) {
       schema ? supabase.schema(schema).from(tableName) : supabase.from(tableName);
 
     const normalizedFileName = String(fileName || "manual_upload.xlsx").trim() || "manual_upload.xlsx";
-    console.log("[api/inventory/upload] start", {
-      fileName: normalizedFileName,
-      inputRows: rows.length,
-      schema: schema || "public",
-    });
-
     // Same file name => hard overwrite old data before inserting the new version.
     await deleteByFileName(getTable, normalizedFileName);
 
@@ -184,8 +178,6 @@ export async function POST(req: NextRequest) {
 
     let insertedTotal = 0;
     for (const [monthDate, monthRows] of rowsByMonth.entries()) {
-      console.log("[api/inventory/upload] saving month", monthDate, "rows", monthRows.length);
-
       const deleteDatasetRes = await getTable("datasets").delete().eq("month", monthDate);
       if (deleteDatasetRes.error) {
         throw new Error(`Failed to delete previous datasets row: ${deleteDatasetRes.error.message}`);
@@ -346,13 +338,6 @@ export async function POST(req: NextRequest) {
 
       insertedTotal += monthRows.length;
     }
-
-    console.log("[api/inventory/upload] completed", {
-      insertedTotal,
-      normalizedRows: normalizedRows.length,
-      months: rowsByMonth.size,
-      warningsCount: warnings.length,
-    });
 
     return NextResponse.json({
       success: true,

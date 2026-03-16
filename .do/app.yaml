@@ -1,0 +1,49 @@
+name: inventoryintelligence
+region: sgp
+
+services:
+- name: web
+  dockerfile_path: Dockerfile
+  github:
+    repo: qichengf-glitch/inventoryintelligence
+    branch: main
+    deploy_on_push: true
+  http_port: 8080
+  instance_count: 1
+  instance_size_slug: apps-s-1vcpu-1gb
+  health_check:
+    http_path: /
+    initial_delay_seconds: 30
+    period_seconds: 10
+    timeout_seconds: 5
+    success_threshold: 1
+    failure_threshold: 3
+  envs:
+  - key: NODE_ENV
+    value: production
+  - key: PORT
+    value: "8080"
+  # Set these secret values in the DigitalOcean App Platform dashboard
+  - key: SUPABASE_URL
+    type: SECRET
+  - key: SUPABASE_ANON_KEY
+    type: SECRET
+  - key: SUPABASE_SERVICE_ROLE_KEY
+    type: SECRET
+  - key: OPENAI_API_KEY
+    type: SECRET
+  # Inventory table configuration (non-secret)
+  - key: INVENTORY_SCHEMA
+    value: public
+  - key: INVENTORY_TABLE
+    value: summary
+  - key: INVENTORY_SKU_COLUMN
+    value: SKU
+  - key: INVENTORY_MONTH_COLUMN
+    value: Time
+  - key: INVENTORY_SALES_COLUMN
+    value: month_sales
+  - key: INVENTORY_STOCK_COLUMN
+    value: month_end_stock
+  - key: OPENAI_MODEL
+    value: gpt-4o-mini
