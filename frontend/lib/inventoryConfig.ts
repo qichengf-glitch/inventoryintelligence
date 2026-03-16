@@ -2,8 +2,8 @@ export type InventoryConfig = {
   schema?: string;
   table: string;
   skuColumn: string;
-  monthColumn?: string;
-  timeColumn?: string;
+  monthColumn: string;
+  timeColumn: string;
   salesColumn: string;
   stockColumn: string;
 };

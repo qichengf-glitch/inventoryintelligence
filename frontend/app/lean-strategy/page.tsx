@@ -39,15 +39,6 @@ const XYZ_COLORS: Record<XyzClass, { badge: string; text: string }> = {
   Z: { badge: "bg-red-500/20 border-red-400/50 text-red-200", text: "text-red-300" },
 };
 
-// Cell color intensity based on count
-function matrixCellBg(count: number, max: number): string {
-  if (count === 0) return "bg-slate-900/40";
-  const ratio = max > 0 ? count / max : 0;
-  if (ratio >= 0.7) return "bg-slate-600/40";
-  if (ratio >= 0.4) return "bg-slate-600/25";
-  return "bg-slate-600/15";
-}
-
 const ABC_DESCS: Record<AbcClass, { zh: string; en: string }> = {
   A: { zh: "高价值（前80%销量贡献）", en: "High value — top 80% of sales" },
   B: { zh: "中价值（80-95%销量贡献）", en: "Mid value — 80–95% of sales" },
@@ -114,11 +105,6 @@ export default function LeanStrategyPage() {
       return a.sku.localeCompare(b.sku);
     });
   }, [data, selectedCell, filterAbc, filterXyz, search, sortBy]);
-
-  const maxInMatrix = useMemo(() => {
-    if (!data) return 1;
-    return Math.max(1, ...["A", "B", "C"].flatMap((a) => ["X", "Y", "Z"].map((x) => data.matrix[a as AbcClass][x as XyzClass])));
-  }, [data]);
 
   if (loading) {
     return (
@@ -255,7 +241,7 @@ export default function LeanStrategyPage() {
                             className={`w-full rounded-xl border p-3 text-left transition-all ${
                               isSelected
                                 ? "border-cyan-400/60 bg-cyan-500/20"
-                                : `border-slate-700 ${matrixCellBg(count, maxInMatrix)} hover:border-slate-600`
+                                : "border-slate-700 bg-slate-900/40 hover:border-slate-600 hover:bg-slate-900/55"
                             }`}
                           >
                             <div className="flex items-center justify-between mb-1">

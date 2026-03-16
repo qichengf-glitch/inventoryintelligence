@@ -80,7 +80,11 @@ export async function GET() {
       .limit(1)
       .single();
     if (maxError) throw new Error(maxError.message);
-    const latestMonth = String((maxData as Record<string, unknown>)[timeColumn] ?? "").trim();
+    const latestMonthValue =
+      typeof maxData === "object" && maxData !== null
+        ? (maxData as Record<string, unknown>)[timeColumn]
+        : "";
+    const latestMonth = String(latestMonthValue ?? "").trim();
     if (!latestMonth) throw new Error("No data found");
 
     // Fetch only the latest month rows with batch
@@ -96,7 +100,7 @@ export async function GET() {
 
       if (error) throw new Error(error.message);
       if (!data || data.length === 0) break;
-      allRows.push(...(data as Array<Record<string, unknown>>));
+      allRows.push(...(data as unknown as Array<Record<string, unknown>>));
       if (data.length < PAGE) break;
     }
 
