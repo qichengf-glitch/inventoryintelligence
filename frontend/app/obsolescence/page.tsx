@@ -58,7 +58,7 @@ function fmt(n: number) {
 function fmtCurrency(n: number) {
   if (n >= 1_000_000) return `¥${(n / 1_000_000).toFixed(2)}M`;
   if (n >= 10_000) return `¥${(n / 10_000).toFixed(1)}万`;
-  return `¥${n.toLocaleString()}`;
+  return `¥${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
 }
 
 function RiskBadge({ tier, lang }: { tier: RiskTier; lang: string }) {
@@ -74,16 +74,14 @@ function RiskBadge({ tier, lang }: { tier: RiskTier; lang: string }) {
 function SummaryCard({
   tier,
   data,
-  unitCost,
   lang,
 }: {
   tier: RiskTier;
   data: ObsolescenceSummary[RiskTier];
-  unitCost: number;
   lang: string;
 }) {
   const meta = TIER_META[tier];
-  const capital = data.total_stock * unitCost;
+  const hasCapital = data.total_capital > 0;
 
   return (
     <article className={`${CARD} flex flex-col gap-3`}>
@@ -104,7 +102,9 @@ function SummaryCard({
           <p className="mt-0.5 text-xs text-slate-500">{lang === "zh" ? "库存量" : "Units"}</p>
         </div>
         <div>
-          <p className={`text-lg font-semibold ${meta.colorClass}`}>{fmtCurrency(capital)}</p>
+          <p className={`text-lg font-semibold ${hasCapital ? meta.colorClass : "text-slate-500"}`}>
+            {hasCapital ? fmtCurrency(data.total_capital) : "—"}
+          </p>
           <p className="mt-0.5 text-xs text-slate-500">{lang === "zh" ? "占用资金" : "Capital"}</p>
         </div>
       </div>
@@ -117,7 +117,6 @@ export default function ObsolescencePage() {
   const [data, setData] = useState<ObsolescenceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [unitCost, setUnitCost] = useState(100);
   const [filterTier, setFilterTier] = useState<FilterTier>("all");
   const [searchSku, setSearchSku] = useState("");
 
@@ -147,7 +146,9 @@ export default function ObsolescencePage() {
     : [];
 
   const totalCapital = data
-    ? (data.summary.high.total_stock + data.summary.medium.total_stock + data.summary.watch.total_stock) * unitCost
+    ? data.summary.high.total_capital +
+      data.summary.medium.total_capital +
+      data.summary.watch.total_capital
     : 0;
 
   return (
@@ -157,33 +158,16 @@ export default function ObsolescencePage() {
         <p className="text-xs uppercase tracking-[0.15em] text-slate-400">
           {lang === "zh" ? "库存健康" : "Inventory Health"}
         </p>
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="mt-1 text-2xl font-semibold text-slate-100">
-              {lang === "zh" ? "呆滞预警" : "Obsolescence Risk"}
-            </h1>
-            <p className="mt-1 text-sm text-slate-400">
-              {lang === "zh"
-                ? "依据批号入库日期，自动识别库龄风险并量化占用资金"
-                : "Identifies aging inventory by batch inbound date and quantifies capital tied up"}
-            </p>
-          </div>
-          {/* Unit cost input */}
-          <label className="flex items-center gap-2 text-sm text-slate-300">
-            <span className="whitespace-nowrap">{lang === "zh" ? "单品成本 (¥)" : "Unit Cost (¥)"}</span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={unitCost}
-              onChange={(e) => setUnitCost(Math.max(0, Number(e.target.value)))}
-              className="w-28 rounded-xl border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-slate-100 outline-none focus:border-cyan-400"
-            />
-          </label>
-        </div>
+        <h1 className="mt-1 text-2xl font-semibold text-slate-100">
+          {lang === "zh" ? "呆滞预警" : "Obsolescence Risk"}
+        </h1>
+        <p className="mt-1 text-sm text-slate-400">
+          {lang === "zh"
+            ? "依据批号入库日期，自动识别库龄风险并量化占用资金"
+            : "Identifies aging inventory by batch inbound date and quantifies capital tied up"}
+        </p>
       </section>
 
-      {/* Summary cards */}
       {loading ? (
         <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
           {[0, 1, 2].map((i) => (
@@ -194,10 +178,10 @@ export default function ObsolescencePage() {
         <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>
       ) : data ? (
         <>
-          {/* 3-tier summary */}
+          {/* 3-tier summary cards */}
           <section className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {(["high", "medium", "watch"] as RiskTier[]).map((tier) => (
-              <SummaryCard key={tier} tier={tier} data={data.summary[tier]} unitCost={unitCost} lang={lang} />
+              <SummaryCard key={tier} tier={tier} data={data.summary[tier]} lang={lang} />
             ))}
           </section>
 
@@ -207,20 +191,28 @@ export default function ObsolescencePage() {
               <p className="text-xs uppercase tracking-[0.12em] text-slate-400">
                 {lang === "zh" ? "总呆滞资金（高＋中＋观察）" : "Total Capital at Risk (High + Medium + Watch)"}
               </p>
-              <p className="mt-1 text-3xl font-bold text-slate-100">{fmtCurrency(totalCapital)}</p>
+              <p className="mt-1 text-3xl font-bold text-slate-100">
+                {totalCapital > 0 ? fmtCurrency(totalCapital) : "—"}
+              </p>
             </div>
-            <div className="flex flex-wrap gap-3 text-sm text-slate-400">
+            <div className="flex flex-wrap gap-4 text-sm text-slate-400">
               <span>
                 {lang === "zh" ? "高风险" : "High"}:{" "}
-                <span className="font-semibold text-red-300">{fmtCurrency(data.summary.high.total_stock * unitCost)}</span>
+                <span className="font-semibold text-red-300">
+                  {data.summary.high.total_capital > 0 ? fmtCurrency(data.summary.high.total_capital) : "—"}
+                </span>
               </span>
               <span>
                 {lang === "zh" ? "中风险" : "Medium"}:{" "}
-                <span className="font-semibold text-amber-300">{fmtCurrency(data.summary.medium.total_stock * unitCost)}</span>
+                <span className="font-semibold text-amber-300">
+                  {data.summary.medium.total_capital > 0 ? fmtCurrency(data.summary.medium.total_capital) : "—"}
+                </span>
               </span>
               <span>
                 {lang === "zh" ? "观察" : "Watch"}:{" "}
-                <span className="font-semibold text-cyan-300">{fmtCurrency(data.summary.watch.total_stock * unitCost)}</span>
+                <span className="font-semibold text-cyan-300">
+                  {data.summary.watch.total_capital > 0 ? fmtCurrency(data.summary.watch.total_capital) : "—"}
+                </span>
               </span>
             </div>
           </section>
@@ -272,6 +264,7 @@ export default function ObsolescencePage() {
                       <th className="px-3 py-2 text-left">{lang === "zh" ? "入库日期" : "Inbound"}</th>
                       <th className="px-3 py-2 text-right">{lang === "zh" ? "在库时长" : "Age"}</th>
                       <th className="px-3 py-2 text-right">{lang === "zh" ? "现库存" : "Stock"}</th>
+                      <th className="px-3 py-2 text-right">{lang === "zh" ? "单品成本" : "Unit Cost"}</th>
                       <th className="px-3 py-2 text-right">{lang === "zh" ? "占用资金" : "Capital"}</th>
                       <th className="px-3 py-2 text-left">{lang === "zh" ? "风险等级" : "Risk"}</th>
                     </tr>
@@ -288,7 +281,6 @@ export default function ObsolescencePage() {
                             ? `${Math.floor(item.age_months / 12)}y ${item.age_months % 12}m`
                             : `${item.age_months}m`
                           : "—";
-                      const capital = item.current_stock * unitCost;
 
                       return (
                         <tr
@@ -300,8 +292,11 @@ export default function ObsolescencePage() {
                           <td className="px-3 py-2 text-slate-400">{inbound}</td>
                           <td className="px-3 py-2 text-right tabular-nums text-slate-300">{age}</td>
                           <td className="px-3 py-2 text-right tabular-nums">{fmt(item.current_stock)}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-slate-400">
+                            {item.unit_cost !== null ? `¥${item.unit_cost}` : "—"}
+                          </td>
                           <td className={`px-3 py-2 text-right tabular-nums font-medium ${TIER_META[item.risk_tier].colorClass}`}>
-                            {fmtCurrency(capital)}
+                            {item.capital !== null ? fmtCurrency(item.capital) : "—"}
                           </td>
                           <td className="px-3 py-2">
                             <RiskBadge tier={item.risk_tier} lang={lang} />

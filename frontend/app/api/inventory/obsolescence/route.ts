@@ -9,6 +9,8 @@ export type ObsolescenceItem = {
   sku: string;
   batch: string;
   current_stock: number;
+  unit_cost: number | null;
+  capital: number | null;
   inbound_year: number;
   inbound_month: number;
   age_months: number;
@@ -16,10 +18,10 @@ export type ObsolescenceItem = {
 };
 
 export type ObsolescenceSummary = {
-  high: { batches: number; total_stock: number };
-  medium: { batches: number; total_stock: number };
-  watch: { batches: number; total_stock: number };
-  unknown: { batches: number; total_stock: number };
+  high: { batches: number; total_stock: number; total_capital: number };
+  medium: { batches: number; total_stock: number; total_capital: number };
+  watch: { batches: number; total_stock: number; total_capital: number };
+  unknown: { batches: number; total_stock: number; total_capital: number };
 };
 
 export type ObsolescenceResponse = {
@@ -53,9 +55,24 @@ export async function GET() {
   try {
     const { schema, table, skuColumn, timeColumn, stockColumn } = getInventoryConfig();
     const supabase = createSupabaseAdminClient();
-    const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
 
-    // Fetch all rows with batch, sku, time, stock — paginate to avoid limits
+    // Fetch SKU costs from sku_price_cost table
+    const costMap = new Map<string, number>();
+    const { data: costRows, error: costError } = await supabase
+      .from("sku_price_cost")
+      .select("sku, cost");
+    if (costError) {
+      console.warn("[obsolescence] Could not load sku_price_cost:", costError.message);
+    } else {
+      for (const row of costRows ?? []) {
+        const sku = String(row.sku ?? "").trim();
+        const cost = Number(row.cost);
+        if (sku && Number.isFinite(cost)) costMap.set(sku, cost);
+      }
+    }
+
+    // Fetch all inventory rows with batch
+    const tableRef = schema ? supabase.schema(schema).from(table) : supabase.from(table);
     const PAGE = 10000;
     const allRows: Array<Record<string, unknown>> = [];
     for (let from = 0; ; from += PAGE) {
@@ -96,19 +113,14 @@ export async function GET() {
     const items: ObsolescenceItem[] = [];
 
     for (const { sku, batch, stock } of best.values()) {
-      if (stock <= 0) continue; // skip zero/negative stock
+      if (stock <= 0) continue;
+
+      const unit_cost = costMap.get(sku) ?? null;
+      const capital = unit_cost !== null ? stock * unit_cost : null;
 
       const parsed = parseBatchDate(batch);
       if (!parsed) {
-        items.push({
-          sku,
-          batch,
-          current_stock: stock,
-          inbound_year: 0,
-          inbound_month: 0,
-          age_months: -1,
-          risk_tier: "unknown",
-        });
+        items.push({ sku, batch, current_stock: stock, unit_cost, capital, inbound_year: 0, inbound_month: 0, age_months: -1, risk_tier: "unknown" });
         continue;
       }
 
@@ -117,6 +129,8 @@ export async function GET() {
         sku,
         batch,
         current_stock: stock,
+        unit_cost,
+        capital,
         inbound_year: parsed.year,
         inbound_month: parsed.month,
         age_months: age,
@@ -124,30 +138,29 @@ export async function GET() {
       });
     }
 
-    // Sort: high first, then medium, then watch, then unknown; within tier by stock desc
+    // Sort: high first, then by capital desc (fall back to stock desc)
     const tierOrder = { high: 0, medium: 1, watch: 2, unknown: 3 };
     items.sort((a, b) => {
       const td = tierOrder[a.risk_tier] - tierOrder[b.risk_tier];
       if (td !== 0) return td;
-      return b.current_stock - a.current_stock;
+      const ca = a.capital ?? a.current_stock;
+      const cb = b.capital ?? b.current_stock;
+      return cb - ca;
     });
 
     const summary: ObsolescenceSummary = {
-      high: { batches: 0, total_stock: 0 },
-      medium: { batches: 0, total_stock: 0 },
-      watch: { batches: 0, total_stock: 0 },
-      unknown: { batches: 0, total_stock: 0 },
+      high: { batches: 0, total_stock: 0, total_capital: 0 },
+      medium: { batches: 0, total_stock: 0, total_capital: 0 },
+      watch: { batches: 0, total_stock: 0, total_capital: 0 },
+      unknown: { batches: 0, total_stock: 0, total_capital: 0 },
     };
     for (const item of items) {
       summary[item.risk_tier].batches += 1;
       summary[item.risk_tier].total_stock += item.current_stock;
+      summary[item.risk_tier].total_capital += item.capital ?? 0;
     }
 
-    return NextResponse.json<ObsolescenceResponse>({
-      items,
-      summary,
-      as_of: today.toISOString(),
-    });
+    return NextResponse.json<ObsolescenceResponse>({ items, summary, as_of: today.toISOString() });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed" },
