@@ -20,6 +20,14 @@ function withCopiedCookies(source: NextResponse, target: NextResponse) {
 }
 
 export async function middleware(request: NextRequest) {
+  // Intercept stale Server Action requests from old deployments.
+  // Since this app has no server actions, any Next-Action POST is from
+  // a client running stale JS. Redirect to force a fresh page load.
+  if (request.method === "POST" && request.headers.get("next-action")) {
+    const refreshUrl = request.nextUrl.clone();
+    return NextResponse.redirect(refreshUrl, { status: 303 });
+  }
+
   let response = NextResponse.next({
     request: {
       headers: request.headers,
