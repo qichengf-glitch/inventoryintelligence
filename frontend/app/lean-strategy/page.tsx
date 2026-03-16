@@ -43,9 +43,9 @@ const XYZ_COLORS: Record<XyzClass, { badge: string; text: string }> = {
 function matrixCellBg(count: number, max: number): string {
   if (count === 0) return "bg-slate-900/40";
   const ratio = max > 0 ? count / max : 0;
-  if (ratio >= 0.7) return "bg-cyan-500/25";
-  if (ratio >= 0.4) return "bg-cyan-500/15";
-  return "bg-cyan-500/8";
+  if (ratio >= 0.7) return "bg-slate-600/40";
+  if (ratio >= 0.4) return "bg-slate-600/25";
+  return "bg-slate-600/15";
 }
 
 const ABC_DESCS: Record<AbcClass, { zh: string; en: string }> = {
