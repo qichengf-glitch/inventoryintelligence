@@ -320,9 +320,19 @@ function modelApplicability(seriesLen: number) {
   return map;
 }
 
-function forecastByModel(model: ModelKey, series: number[], horizonMonths: number) {
+type ForecastParams = { alpha?: number; beta?: number; gamma?: number };
+
+function forecastByModel(
+  model: ModelKey,
+  series: number[],
+  horizonMonths: number,
+  params: ForecastParams = {}
+) {
   const h = clamp(horizonMonths, 1, 24);
   const season = 12;
+  const a = params.alpha;
+  const b = params.beta;
+  const g = params.gamma;
 
   switch (model) {
     case "NAIVE":
@@ -332,11 +342,11 @@ function forecastByModel(model: ModelKey, series: number[], horizonMonths: numbe
     case "SMA":
       return smaForecast(series, h, 3);
     case "SES":
-      return sesForecast(series, h, 0.3);
+      return sesForecast(series, h, a ?? 0.3);
     case "HOLT":
-      return holtForecast(series, h, 0.3, 0.2);
+      return holtForecast(series, h, a ?? 0.3, b ?? 0.2);
     case "HW":
-      return holtWintersAdditive(series, h, season, 0.3, 0.15, 0.2);
+      return holtWintersAdditive(series, h, season, a ?? 0.3, b ?? 0.15, g ?? 0.2);
   }
 }
 
@@ -466,6 +476,15 @@ export default function Page() {
 
   const companyKey = "customer";
 
+  type ModelRec = {
+    recommended_model: ModelKey;
+    best_alpha: number | null;
+    best_beta: number | null;
+    best_gamma: number | null;
+    mape_at_recommendation: number | null;
+    runner_up_model: string | null;
+  };
+
   // API-backed state
   const [skuList, setSkuList] = useState<string[]>([]);
   const [skuLoading, setSkuLoading] = useState(true);
@@ -478,6 +497,11 @@ export default function Page() {
   const [currentStockState, setCurrentStockState] = useState<number | null>(null);
   const [currentStockMonth, setCurrentStockMonth] = useState<string | null>(null);
   const [safetyStockFromApi, setSafetyStockFromApi] = useState<number | null>(null);
+
+  // Model recommendation from backtest
+  const [modelRec, setModelRec] = useState<ModelRec | null>(null);
+  // Whether the user has manually overridden the recommended model
+  const [recOverridden, setRecOverridden] = useState(false);
 
   const [sku, setSku] = useState<string>("FWD100");
 
@@ -588,10 +612,33 @@ export default function Page() {
       }
     };
 
+    const loadRecommendation = async () => {
+      try {
+        const res = await fetch(
+          `/api/forecast/backtest/recommendations?sku=${encodeURIComponent(sku)}`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        const rec: ModelRec | null = data?.recommendation ?? null;
+        setModelRec(rec);
+        // Auto-apply recommended model if user hasn't manually overridden
+        if (rec && !recOverridden) {
+          setModel(rec.recommended_model);
+        }
+      } catch {
+        setModelRec(null);
+      }
+    };
+
     loadDemand();
     loadStock();
     loadSafetyStock();
-  }, [sku]);
+    loadRecommendation();
+  }, [sku]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset override flag when SKU changes so recommendation is auto-applied
+  useEffect(() => { setRecOverridden(false); }, [sku]);
 
   const [customerType, setCustomerType] = useState<CustomerType>("普通");
 
@@ -651,13 +698,24 @@ export default function Page() {
   const forecast = useMemo(() => {
     if (!hasDemand) return [];
     const h = clamp(horizonMonths, 1, 24);
-    const pred = applicability[model]?.usable ? forecastByModel(model, series, h) : naiveForecast(series, h);
+    // Use optimised params from backtest recommendation when available
+    const recParams: ForecastParams =
+      modelRec && !recOverridden
+        ? {
+            alpha: modelRec.best_alpha ?? undefined,
+            beta: modelRec.best_beta ?? undefined,
+            gamma: modelRec.best_gamma ?? undefined,
+          }
+        : {};
+    const pred = applicability[model]?.usable
+      ? forecastByModel(model, series, h, recParams)
+      : naiveForecast(series, h);
     const lastDate = demandHistory.at(-1)?.t ?? "2025-01-01";
     return Array.from({ length: pred.length }, (_, i) => ({
       t: addMonthsISO(lastDate, i + 1),
       y: Math.round(Math.max(0, pred[i] ?? 0)),
     }));
-  }, [hasDemand, model, series, horizonMonths, demandHistory, applicability]);
+  }, [hasDemand, model, series, horizonMonths, demandHistory, applicability, modelRec, recOverridden]);
 
   // lead-time demand = sum next leadTimeMonths
   const leadDemand = useMemo(() => {
@@ -1054,12 +1112,36 @@ export default function Page() {
 
           {/* Primary model */}
           <div>
-            <p className="text-xs font-semibold text-slate-400 mb-1.5">{tt(TEXT.model, lang)}</p>
-            <select value={model} onChange={(e) => setModel(e.target.value as ModelKey)} className={SELECT_CLS}>
+            <div className="flex items-center gap-2 mb-1.5">
+              <p className="text-xs font-semibold text-slate-400">{tt(TEXT.model, lang)}</p>
+              {modelRec && !recOverridden && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  AI推荐{modelRec.mape_at_recommendation != null ? ` · MAPE ${modelRec.mape_at_recommendation.toFixed(1)}%` : ""}
+                </span>
+              )}
+              {modelRec && recOverridden && (
+                <button
+                  type="button"
+                  onClick={() => { setRecOverridden(false); setModel(modelRec.recommended_model); }}
+                  className="text-[10px] text-cyan-400 hover:text-cyan-300 underline"
+                >
+                  {lang === "zh" ? "恢复推荐" : "Use recommended"}
+                </button>
+              )}
+            </div>
+            <select
+              value={model}
+              onChange={(e) => {
+                setModel(e.target.value as ModelKey);
+                setRecOverridden(true);
+              }}
+              className={SELECT_CLS}
+            >
               {(["HOLT", "SES", "SMA", "NAIVE", "SNAIVE", "HW"] as ModelKey[]).map((m) => (
                 <option key={m} value={m} disabled={!applicability[m].usable}>
                   {m === "SNAIVE" ? "Seasonal Naive" : m === "HW" ? "Holt-Winters" : m}
                   {!applicability[m].usable ? "（不适用）" : ""}
+                  {modelRec?.recommended_model === m && !recOverridden ? " ★" : ""}
                 </option>
               ))}
             </select>
@@ -1105,6 +1187,14 @@ export default function Page() {
               <p className="text-sm font-semibold text-slate-100">{tt(TEXT.demandForecast, lang)}</p>
               <p className="text-xs text-slate-400 mt-0.5">
                 主模型：<span className="text-slate-200 font-medium">{model}</span>
+                {modelRec && !recOverridden && modelRec.best_alpha != null && (
+                  <span className="text-emerald-400/80 ml-1">
+                    (α={modelRec.best_alpha}
+                    {modelRec.best_beta != null ? ` β=${modelRec.best_beta}` : ""}
+                    {modelRec.best_gamma != null ? ` γ=${modelRec.best_gamma}` : ""}
+                    )
+                  </span>
+                )}
                 {" · "}预测：<span className="text-slate-200 font-medium">{horizonMonths}M</span>
                 {" · "}交期：<span className="text-slate-200 font-medium">{leadTimeMonths}M</span>
                 {" · "}<span className="text-slate-500">{tt(TEXT.chartHint, lang)}</span>

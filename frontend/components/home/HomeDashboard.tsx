@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 
 import CopilotPanel from "@/components/copilot/CopilotPanel";
 import KpiGrid from "@/components/home/KpiGrid";
@@ -79,6 +79,10 @@ export default function HomeDashboard({ displayName = "" }: HomeDashboardProps) 
   const [summary, setSummary] = useState<DashboardSummary>(FALLBACK_SUMMARY);
   const [isLoading, setIsLoading] = useState(true);
 
+  // AI insight state
+  const [aiInsight, setAiInsight] = useState<string | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+
   const todayLabel = useMemo(
     () =>
       new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", {
@@ -146,6 +150,36 @@ export default function HomeDashboard({ displayName = "" }: HomeDashboardProps) 
     };
   }, []);
 
+  const fetchAiInsight = useCallback(async () => {
+    setAiLoading(true);
+    setAiInsight(null);
+    try {
+      const { kpis, stockStatus, latestMonth } = summary;
+      const question =
+        lang === "zh"
+          ? `请用2-4句话解读以下本月库存数据的核心亮点和风险，并给出1-2条最高优先级行动建议。数据：最新月份=${latestMonth}；SKU总数=${kpis.find(k=>k.id==="kpi_1")?.value}；风险SKU=${kpis.find(k=>k.id==="kpi_2")?.value}；当前库存=${kpis.find(k=>k.id==="kpi_3")?.value}；月销售=${kpis.find(k=>k.id==="kpi_4")?.value}；健康=${stockStatus.percentages.normal_stock?.toFixed(1)}%；低库存=${stockStatus.percentages.low_stock?.toFixed(1)}%；缺货=${stockStatus.percentages.out_of_stock?.toFixed(1)}%；过库存=${stockStatus.percentages.over_stock?.toFixed(1)}%。`
+          : `In 2-4 sentences, highlight the key insights and risks from this month's inventory data, then give 1-2 top-priority action items. Data: latest_month=${latestMonth}; skus=${kpis.find(k=>k.id==="kpi_1")?.value}; at_risk_skus=${kpis.find(k=>k.id==="kpi_2")?.value}; stock=${kpis.find(k=>k.id==="kpi_3")?.value}; sales=${kpis.find(k=>k.id==="kpi_4")?.value}; healthy=${stockStatus.percentages.normal_stock?.toFixed(1)}%; low=${stockStatus.percentages.low_stock?.toFixed(1)}%; out=${stockStatus.percentages.out_of_stock?.toFixed(1)}%; over=${stockStatus.percentages.over_stock?.toFixed(1)}%.`;
+
+      const res = await fetch("/api/ai/forecast-advice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question,
+          scope: "home",
+          lang,
+          dashboardSummaryContext: { kpis, stockStatus, latestMonth },
+        }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = await res.json();
+      setAiInsight(data?.answer ?? null);
+    } catch {
+      setAiInsight(lang === "zh" ? "AI 暂时不可用，请稍后重试。" : "AI temporarily unavailable.");
+    } finally {
+      setAiLoading(false);
+    }
+  }, [summary, lang]);
+
   return (
     <div className="space-y-6">
       <section className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-slate-800 bg-slate-900/70 px-5 py-4">
@@ -191,6 +225,49 @@ export default function HomeDashboard({ displayName = "" }: HomeDashboardProps) 
         <div className="xl:col-span-5">
           <StockStatusChart data={summary.stockStatus} />
         </div>
+      </section>
+
+      {/* AI one-click insight panel */}
+      <section className="rounded-2xl border border-slate-800 bg-slate-900/70 px-5 py-4 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.15em] text-slate-400">
+              {lang === "zh" ? "AI 数据解读" : "AI Insight"}
+            </p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {lang === "zh" ? "一键生成本月数据摘要与行动建议" : "Generate a summary and action items for this month"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={fetchAiInsight}
+            disabled={aiLoading || isLoading}
+            className="shrink-0 flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {aiLoading ? (
+              <>
+                <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
+                {lang === "zh" ? "生成中…" : "Generating…"}
+              </>
+            ) : (
+              <>
+                ✦ {lang === "zh" ? "AI 解读" : "AI Insight"}
+              </>
+            )}
+          </button>
+        </div>
+
+        {aiInsight && (
+          <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 px-4 py-3 text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
+            {aiInsight}
+          </div>
+        )}
+
+        {!aiInsight && !aiLoading && (
+          <p className="text-xs text-slate-600 italic">
+            {lang === "zh" ? "点击「AI 解读」按钮生成本月数据洞察。" : "Click the button above to generate insights."}
+          </p>
+        )}
       </section>
 
       <CopilotPanel
