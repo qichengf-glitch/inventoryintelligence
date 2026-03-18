@@ -1,8 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useLanguage, type Lang } from "@/components/LanguageProvider";
+
+type SuggestedLink = { label: string; labelZh: string; href: string };
 
 type ChatMessage = {
   id: string;
@@ -10,6 +13,8 @@ type ChatMessage = {
   text: string;
   model?: string;
   isInsight?: boolean;
+  htmlContent?: string | null;
+  suggestedLinks?: SuggestedLink[];
 };
 
 type ChatSession = {
@@ -60,11 +65,11 @@ const TEXT = {
   chats: { zh: "Chats", en: "Chats" },
   placeholder: { zh: "输入你的问题...", en: "Ask your question..." },
   send: { zh: "Send", en: "Send" },
-  empty: { zh: "输入问题开始对话，或点击「AI 解读」生成本月数据洞察", en: "Ask something to start, or click \"AI Insight\" to summarise this month" },
+  empty: { zh: "正在生成本月数据洞察...", en: "Generating monthly insight..." },
+  emptyNoContext: { zh: "输入问题开始对话", en: "Ask something to start a conversation" },
   model: { zh: "Model", en: "Model" },
-  insightBtn: { zh: "AI 解读", en: "AI Insight" },
-  insightGenerating: { zh: "生成中…", en: "Generating…" },
   insightLabel: { zh: "📊 本月数据解读", en: "📊 Monthly Insight" },
+  goTo: { zh: "前往", en: "Go to" },
 };
 
 function t(str: LangString, lang: Lang) {
@@ -80,12 +85,32 @@ function buildNewSession(lang: Lang): ChatSession {
   };
 }
 
+/** Sandboxed iframe for AI-generated HTML charts */
+function HtmlChart({ html }: { html: string }) {
+  const blob = useMemo(() => {
+    const b = new Blob([html], { type: "text/html" });
+    return URL.createObjectURL(b);
+  }, [html]);
+
+  useEffect(() => {
+    return () => URL.revokeObjectURL(blob);
+  }, [blob]);
+
+  return (
+    <iframe
+      src={blob}
+      sandbox="allow-scripts"
+      className="mt-3 h-72 w-full rounded-xl border border-slate-700 bg-slate-950"
+      title="AI generated chart"
+    />
+  );
+}
+
 export default function CopilotPanel({ summaryContext, insightContext, dashboardLoading }: CopilotPanelProps) {
   const { lang } = useLanguage();
 
   const [question, setQuestion] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [insightLoading, setInsightLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState("gpt-4o-mini");
   const [usedModel, setUsedModel] = useState<string | null>(null);
 
@@ -94,6 +119,8 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  // Track whether we've already auto-generated the insight for the current session
+  const autoInsightFiredRef = useRef(false);
 
   useEffect(() => {
     if (!activeSessionId && sessions[0]) {
@@ -138,6 +165,7 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
 
   const createNewChat = () => {
     const session = buildNewSession(lang);
+    autoInsightFiredRef.current = false;
     setSessions((previous) => [session, ...previous]);
     setActiveSessionId(session.id);
     setQuestion("");
@@ -146,7 +174,7 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
 
   const clearCurrentChat = () => {
     if (!activeSession) return;
-
+    autoInsightFiredRef.current = false;
     setSessions((previous) =>
       previous.map((session) => {
         if (session.id !== activeSession.id) return session;
@@ -160,6 +188,136 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
     setQuestion("");
     setTimeout(() => inputRef.current?.focus(), 10);
   };
+
+  /** Core AI call — shared by user asks and auto-insight */
+  const callAI = async (opts: {
+    sessionId: string;
+    assistantId: string;
+    prompt: string;
+    isInsight?: boolean;
+    sessionTitle?: string;
+    useModel?: string;
+    recentChat?: Array<{ role: "user" | "assistant"; text: string }>;
+  }) => {
+    const { sessionId, assistantId, prompt, isInsight, sessionTitle, useModel, recentChat } = opts;
+    const raw = localStorage.getItem("ii:forecast:latest");
+    const forecastSummary = raw ? JSON.parse(raw) : null;
+
+    const response = await fetch("/api/ai/forecast-advice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scope: "home",
+        question: prompt,
+        forecastSummary,
+        dashboardSummaryContext: summaryContext,
+        recentChat: recentChat ?? [],
+        lang,
+        model: useModel ?? selectedModel,
+      }),
+    });
+
+    const data = await response.json();
+    const modelName = typeof data?.model === "string" ? data.model : (useModel ?? selectedModel);
+    setUsedModel(modelName);
+
+    if (!response.ok) {
+      const code = typeof data?.code === "string" ? data.code : "";
+      const messageText =
+        code === "insufficient_quota"
+          ? lang === "zh"
+            ? "当前 API 项目额度不足（insufficient_quota）。"
+            : "Insufficient quota for this API project."
+          : typeof data?.error === "string"
+          ? data.error
+          : "AI request failed";
+
+      updateSessionMessages(sessionId, (previous) =>
+        previous.map((item) =>
+          item.id === assistantId ? { ...item, text: messageText, model: modelName } : item
+        )
+      );
+      return;
+    }
+
+    updateSessionMessages(
+      sessionId,
+      (previous) =>
+        previous.map((message) =>
+          message.id === assistantId
+            ? {
+                ...message,
+                text: String(data?.answer || ""),
+                model: modelName,
+                isInsight: isInsight ?? message.isInsight,
+                htmlContent: data?.htmlContent ?? null,
+                suggestedLinks: data?.suggestedLinks ?? [],
+              }
+            : message
+        ),
+      sessionTitle
+    );
+  };
+
+  /** Auto-generate insight when insightContext becomes available for an empty session */
+  useEffect(() => {
+    if (
+      autoInsightFiredRef.current ||
+      !insightContext ||
+      dashboardLoading ||
+      !activeSession ||
+      activeSession.messages.length > 0
+    ) {
+      return;
+    }
+
+    autoInsightFiredRef.current = true;
+
+    const { kpis, stockStatus, latestMonth } = insightContext;
+    const find = (id: string) => kpis.find((k) => k.id === id)?.value ?? 0;
+    const pct = stockStatus.percentages;
+
+    const prompt =
+      lang === "zh"
+        ? `请用2-4句话解读以下本月库存数据的核心亮点和风险，并给出1-2条最高优先级行动建议。数据：最新月份=${latestMonth}；SKU总数=${find("kpi_1")}；风险SKU=${find("kpi_2")}；当前库存=${find("kpi_3")}；月销售=${find("kpi_4")}；健康=${pct.normal_stock?.toFixed(1)}%；低库存=${pct.low_stock?.toFixed(1)}%；缺货=${pct.out_of_stock?.toFixed(1)}%；过库存=${pct.over_stock?.toFixed(1)}%。`
+        : `In 2-4 sentences, highlight the key insights and risks from this month's inventory data, then give 1-2 top-priority action items. Data: latest_month=${latestMonth}; skus=${find("kpi_1")}; at_risk_skus=${find("kpi_2")}; stock=${find("kpi_3")}; sales=${find("kpi_4")}; healthy=${pct.normal_stock?.toFixed(1)}%; low=${pct.low_stock?.toFixed(1)}%; out=${pct.out_of_stock?.toFixed(1)}%; over=${pct.over_stock?.toFixed(1)}%.`;
+
+    const sessionId = activeSession.id;
+    const assistantId = `${Date.now()}-insight`;
+    const insightTitle = t(TEXT.insightLabel, lang);
+
+    updateSessionMessages(
+      sessionId,
+      (prev) => [
+        ...prev,
+        {
+          id: assistantId,
+          role: "assistant",
+          text: lang === "zh" ? "正在解读数据…" : "Analysing data…",
+          model: selectedModel,
+          isInsight: true,
+        },
+      ],
+      insightTitle
+    );
+
+    callAI({
+      sessionId,
+      assistantId,
+      prompt,
+      isInsight: true,
+      sessionTitle: insightTitle,
+    }).catch(() => {
+      updateSessionMessages(sessionId, (prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? { ...m, text: lang === "zh" ? "请求失败，请重试。" : "Request failed." }
+            : m
+        )
+      );
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [insightContext, dashboardLoading]);
 
   const handleAsk = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -193,148 +351,16 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
     setIsLoading(true);
 
     try {
-      const raw = localStorage.getItem("ii:forecast:latest");
-      const forecastSummary = raw ? JSON.parse(raw) : null;
-
-      const response = await fetch("/api/ai/forecast-advice", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          scope: "home",
-          question: prompt,
-          forecastSummary,
-          dashboardSummaryContext: summaryContext,
-          recentChat,
-          lang,
-          model: selectedModel,
-        }),
-      });
-
-      const data = await response.json();
-      const modelName = typeof data?.model === "string" ? data.model : selectedModel;
-      setUsedModel(modelName);
-
-      if (!response.ok) {
-        const code = typeof data?.code === "string" ? data.code : "";
-        const messageText =
-          code === "insufficient_quota"
-            ? lang === "zh"
-              ? "当前 API 项目额度不足（insufficient_quota）。"
-              : "Insufficient quota for this API project."
-            : typeof data?.error === "string"
-            ? data.error
-            : "AI request failed";
-
-        updateSessionMessages(sessionId, (previous) =>
-          previous.map((item) =>
-            item.id === assistantId
-              ? { ...item, text: messageText, model: modelName }
-              : item
-          )
-        );
-        return;
-      }
-
-      updateSessionMessages(sessionId, (previous) =>
-        previous.map((message) =>
-          message.id === assistantId
-            ? {
-                ...message,
-                text: String(data?.answer || ""),
-                model: modelName,
-              }
-            : message
-        )
-      );
+      await callAI({ sessionId, assistantId, prompt, recentChat });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       updateSessionMessages(sessionId, (previous) =>
         previous.map((item) =>
-          item.id === assistantId
-            ? {
-                ...item,
-                text: message,
-                model: selectedModel,
-              }
-            : item
+          item.id === assistantId ? { ...item, text: message, model: selectedModel } : item
         )
       );
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const handleInsight = async () => {
-    if (!insightContext || !activeSession) return;
-    setInsightLoading(true);
-
-    const { kpis, stockStatus, latestMonth } = insightContext;
-    const find = (id: string) => kpis.find((k) => k.id === id)?.value ?? 0;
-    const pct = stockStatus.percentages;
-
-    const question =
-      lang === "zh"
-        ? `请用2-4句话解读以下本月库存数据的核心亮点和风险，并给出1-2条最高优先级行动建议。数据：最新月份=${latestMonth}；SKU总数=${find("kpi_1")}；风险SKU=${find("kpi_2")}；当前库存=${find("kpi_3")}；月销售=${find("kpi_4")}；健康=${pct.normal_stock?.toFixed(1)}%；低库存=${pct.low_stock?.toFixed(1)}%；缺货=${pct.out_of_stock?.toFixed(1)}%；过库存=${pct.over_stock?.toFixed(1)}%。`
-        : `In 2-4 sentences, highlight the key insights and risks from this month's inventory data, then give 1-2 top-priority action items. Data: latest_month=${latestMonth}; skus=${find("kpi_1")}; at_risk_skus=${find("kpi_2")}; stock=${find("kpi_3")}; sales=${find("kpi_4")}; healthy=${pct.normal_stock?.toFixed(1)}%; low=${pct.low_stock?.toFixed(1)}%; out=${pct.out_of_stock?.toFixed(1)}%; over=${pct.over_stock?.toFixed(1)}%.`;
-
-    const sessionId = activeSession.id;
-    const assistantId = `${Date.now()}-insight`;
-    const insightTitle = t(TEXT.insightLabel, lang);
-
-    // Inject a "thinking" placeholder into the chat
-    updateSessionMessages(
-      sessionId,
-      (prev) => [
-        ...prev,
-        {
-          id: assistantId,
-          role: "assistant",
-          text: lang === "zh" ? "正在解读数据…" : "Analysing data…",
-          model: selectedModel,
-          isInsight: true,
-        },
-      ],
-      insightTitle
-    );
-
-    try {
-      const res = await fetch("/api/ai/forecast-advice", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question,
-          scope: "home",
-          lang,
-          model: selectedModel,
-          dashboardSummaryContext: { kpis, stockStatus, latestMonth },
-        }),
-      });
-      const data = await res.json();
-      const answer = res.ok
-        ? String(data?.answer ?? "")
-        : lang === "zh"
-        ? "AI 暂时不可用，请稍后重试。"
-        : "AI temporarily unavailable.";
-
-      updateSessionMessages(sessionId, (prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? { ...m, text: answer, model: data?.model ?? selectedModel }
-            : m
-        )
-      );
-    } catch {
-      updateSessionMessages(sessionId, (prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? { ...m, text: lang === "zh" ? "请求失败，请重试。" : "Request failed." }
-            : m
-        )
-      );
-    } finally {
-      setInsightLoading(false);
     }
   };
 
@@ -350,23 +376,6 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {insightContext && (
-              <button
-                type="button"
-                onClick={handleInsight}
-                disabled={insightLoading || isLoading || !!dashboardLoading}
-                className="flex items-center gap-1.5 rounded-md border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
-              >
-                {insightLoading ? (
-                  <>
-                    <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
-                    {t(TEXT.insightGenerating, lang)}
-                  </>
-                ) : (
-                  <>✦ {t(TEXT.insightBtn, lang)}</>
-                )}
-              </button>
-            )}
             <label className="text-xs text-slate-400" htmlFor="copilot-model">
               {t(TEXT.model, lang)}
             </label>
@@ -447,12 +456,33 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
                       </p>
                     )}
                     {message.text}
+
+                    {/* HTML chart block */}
+                    {message.htmlContent && <HtmlChart html={message.htmlContent} />}
+
+                    {/* Suggested navigation links */}
+                    {message.suggestedLinks && message.suggestedLinks.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {message.suggestedLinks.map((link) => (
+                          <Link
+                            key={link.href}
+                            href={link.href}
+                            className="inline-flex items-center gap-1 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-3 py-1 text-xs font-medium text-cyan-300 transition hover:bg-cyan-500/20"
+                          >
+                            <span>→</span>
+                            {lang === "zh" ? link.labelZh : link.label}
+                          </Link>
+                        ))}
+                      </div>
+                    )}
                   </article>
                 ))}
               </div>
             ) : (
               <div className="grid h-full place-items-center text-sm text-slate-500">
-                {t(TEXT.empty, lang)}
+                {insightContext
+                  ? t(TEXT.empty, lang)
+                  : t(TEXT.emptyNoContext, lang)}
               </div>
             )}
           </div>

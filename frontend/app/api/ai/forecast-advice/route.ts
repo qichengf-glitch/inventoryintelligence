@@ -279,6 +279,69 @@ async function collectDashboardContext(scope: AssistantScope): Promise<Dashboard
   };
 }
 
+// Page link suggestions based on question keywords
+type SuggestedLink = { label: string; labelZh: string; href: string };
+
+const PAGE_LINK_RULES: Array<{ keywords: string[]; link: SuggestedLink }> = [
+  {
+    keywords: ["abc", "xyz", "abc analysis", "abc-xyz", "abc xyz", "abc分析", "xyz分析", "分类分析", "帕累托"],
+    link: { label: "View ABC/XYZ Analysis", labelZh: "查看 ABC/XYZ 分析", href: "/analysis" },
+  },
+  {
+    keywords: ["forecast", "prediction", "trend", "预测", "趋势", "需求预测", "销量预测", "demand forecast"],
+    link: { label: "Open Forecast", labelZh: "打开预测分析", href: "/analysis/forecast" },
+  },
+  {
+    keywords: ["alert", "warning", "safety stock", "reorder", "out of stock", "low stock", "预警", "安全库存", "缺货", "低库存", "补货"],
+    link: { label: "View Alerts", labelZh: "查看库存预警", href: "/alerts" },
+  },
+  {
+    keywords: ["obsolescence", "slow mover", "slow-mover", "dead stock", "aging", "呆滞", "滞销", "过期库存"],
+    link: { label: "View Obsolescence Analysis", labelZh: "查看呆滞库存分析", href: "/analysis/obsolescence" },
+  },
+  {
+    keywords: ["lean", "optimization", "lean strategy", "精益", "优化策略", "库存优化"],
+    link: { label: "View Lean Strategy", labelZh: "查看精益策略", href: "/analysis/lean-strategy" },
+  },
+  {
+    keywords: ["dataset", "upload", "data center", "数据集", "上传", "数据中心"],
+    link: { label: "Go to Data Center", labelZh: "前往数据中心", href: "/data-center" },
+  },
+];
+
+function detectSuggestedLinks(question: string, answer: string, lang: "zh" | "en"): SuggestedLink[] {
+  const combined = `${question} ${answer}`.toLowerCase();
+  const seen = new Set<string>();
+  const links: SuggestedLink[] = [];
+  for (const rule of PAGE_LINK_RULES) {
+    if (rule.keywords.some((kw) => combined.includes(kw.toLowerCase()))) {
+      if (!seen.has(rule.link.href)) {
+        seen.add(rule.link.href);
+        links.push(rule.link);
+      }
+    }
+  }
+  return links;
+}
+
+function isChartRequest(question: string): boolean {
+  const lower = question.toLowerCase();
+  return (
+    lower.includes("chart") ||
+    lower.includes("graph") ||
+    lower.includes("plot") ||
+    lower.includes("visuali") ||
+    lower.includes("趋势图") ||
+    lower.includes("图表") ||
+    lower.includes("折线图") ||
+    lower.includes("柱状图") ||
+    lower.includes("可视化") ||
+    lower.includes("show me") ||
+    lower.includes("display") ||
+    (lower.includes("trend") && (lower.includes("sku") || lower.includes("forecast")))
+  );
+}
+
 function buildPrompt(
   question: string,
   summary?: ForecastSummary,
@@ -286,7 +349,8 @@ function buildPrompt(
   recentChat?: ChatTurn[],
   dashboardSummaryContext?: unknown,
   scope: AssistantScope = "forecast",
-  lang: "zh" | "en" = "zh"
+  lang: "zh" | "en" = "zh",
+  wantChart = false
 ) {
   const modelSynthesisBlock = (() => {
     const models = summary?.models ?? [];
@@ -321,7 +385,14 @@ function buildPrompt(
       : "You are an inventory analysis assistant. Use forecast + historical dashboard data and give clear, practical advice.";
   })();
 
+  const chartRuleZh =
+    "当用户要求图表或可视化时，在文字回答之后，额外生成一段完整的 HTML（用 ```html 代码块包裹），使用内联 Chart.js CDN 绘制对应图表。HTML 必须是完整可独立渲染的页面，包含 <html>/<head>/<body>，使用深色背景（#0f172a）与浅色文字，canvas id='chart'。";
+  const chartRuleEn =
+    "When the user requests a chart or visual, after your text answer, also generate a complete standalone HTML page (wrapped in a ```html code block) using inline Chart.js CDN. The HTML must be self-contained with <html>/<head>/<body>, dark background (#0f172a), light text, canvas id='chart'.";
+  const chartRule = wantChart ? (lang === "zh" ? chartRuleZh : chartRuleEn) : "";
+
   const rules = (() => {
+    const chartRuleLine = chartRule ? `\n${chartRule}` : "";
     if (scope === "home") {
       return lang === "zh"
         ? [
@@ -330,14 +401,14 @@ function buildPrompt(
             "引用上下文中的具体数字与表名（如 inventory_monthly / inventory_summary / datasets）。",
             "若问题超出当前上下文，明确指出缺失数据并给出下一步可执行检查项。",
             "不要编造不存在的数字或表结构。",
-          ].join("\n")
+          ].join("\n") + chartRuleLine
         : [
             "Use concise English.",
             "Answer direct questions on database/model/business metrics/diagnosis.",
             "Cite concrete numbers and table names from context.",
             "If context is insufficient, state limits and propose actionable checks.",
             "Do not invent numbers or schema details.",
-          ].join("\n");
+          ].join("\n") + chartRuleLine;
     }
     return lang === "zh"
       ? [
@@ -348,7 +419,7 @@ function buildPrompt(
           "优先引用有依据的数字（最近月份、库存、销量、缺货风险）。",
           "如数据不足，明确指出缺失项并给出保守建议。",
           "不要编造不存在的数字。",
-        ].join("\n")
+        ].join("\n") + chartRuleLine
       : [
           "Use concise English.",
           "Give a conclusion first, then 2-4 action items.",
@@ -356,7 +427,7 @@ function buildPrompt(
           "Use model consensus (median) and range (min-max) to express uncertainty.",
           "If data is missing, state it and provide conservative guidance.",
           "Do not invent numbers.",
-        ].join("\n");
+        ].join("\n") + chartRuleLine;
   })();
 
   const forecastBlock = JSON.stringify(summary ?? {}, null, 2);
@@ -364,6 +435,12 @@ function buildPrompt(
   const uiBlock = JSON.stringify(dashboardSummaryContext ?? {}, null, 2);
   const chatBlock = JSON.stringify(recentChat ?? [], null, 2);
   return `${intro}\n\nRules:\n${rules}\n\nUser question:\n${question}\n\nRecent chat turns:\n${chatBlock}\n\nForecast summary:\n${forecastBlock}\n\nMulti-model synthesis hint:\n${modelSynthesisBlock}\n\nDashboard UI snapshot context:\n${uiBlock}\n\nDatabase + model context:\n${dashboardBlock}`;
+}
+
+/** Extract HTML code block from AI response (```html ... ```) */
+function extractHtmlBlock(text: string): string | null {
+  const match = text.match(/```html\s*([\s\S]*?)```/i);
+  return match ? match[1].trim() : null;
 }
 
 export async function POST(req: NextRequest) {
@@ -397,7 +474,11 @@ export async function POST(req: NextRequest) {
 
     const allowList = new Set(["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"]);
     const envModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
-    const model = requestedModel && allowList.has(requestedModel) ? requestedModel : envModel;
+    const resolvedLang: "zh" | "en" = lang === "en" ? "en" : "zh";
+    const wantChart = isChartRequest(question);
+    // Use a more capable model automatically when the user requests a chart
+    const chartModel = wantChart ? "gpt-4.1" : envModel;
+    const model = requestedModel && allowList.has(requestedModel) ? requestedModel : chartModel;
     const resolvedScope: AssistantScope = scope === "home" ? "home" : "forecast";
     if (resolvedScope === "forecast") {
       const guard = scopeGuard("forecast", question);
@@ -424,7 +505,8 @@ export async function POST(req: NextRequest) {
       Array.isArray(recentChat) ? recentChat.slice(-8) : [],
       dashboardSummaryContext,
       resolvedScope,
-      lang === "en" ? "en" : "zh"
+      resolvedLang,
+      wantChart
     );
 
     const res = await fetch("https://api.openai.com/v1/responses", {
@@ -460,16 +542,26 @@ export async function POST(req: NextRequest) {
       .map((c: any) => (c?.type === "output_text" && typeof c?.text === "string" ? c.text : ""))
       .join("\n")
       .trim();
-    const answer = directText || fromOutput;
-    if (!answer) {
+    const rawAnswer = directText || fromOutput;
+    if (!rawAnswer) {
       return NextResponse.json(
         { error: "Model returned no text content", rawType: typeof data, model },
         { status: 502 }
       );
     }
 
+    // Strip the HTML code block from the text answer so the chat bubble stays clean
+    const htmlContent = extractHtmlBlock(rawAnswer);
+    const answer = htmlContent
+      ? rawAnswer.replace(/```html\s*[\s\S]*?```/i, "").trim()
+      : rawAnswer;
+
+    const suggestedLinks = detectSuggestedLinks(question, answer, resolvedLang);
+
     return NextResponse.json({
       answer,
+      htmlContent: htmlContent ?? null,
+      suggestedLinks,
       model,
       scope: resolvedScope,
       hasDashboardContext: Boolean(dashboardContext),

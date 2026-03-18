@@ -578,6 +578,29 @@ async function readStrictLatestMonthKpiTotals(
       return { error: null, rows, stock, sales };
     }
 
+    // Final fallback: SELECT * and compute sums client-side so the KPIs are
+    // never zeroed out just because explicit column names were not found.
+    let fallbackRes = await monthlyTableRef().select("*").eq("month", filterValue);
+    if (!fallbackRes.error && ((fallbackRes.data as RawInventoryRow[] | null) ?? []).length === 0) {
+      const bounds = getMonthStartAndNext(month);
+      if (bounds) {
+        fallbackRes = await monthlyTableRef()
+          .select("*")
+          .gte("month", bounds.startDate)
+          .lt("month", bounds.nextMonthDate);
+      }
+    }
+    if (!fallbackRes.error) {
+      const rows = (fallbackRes.data || []) as RawInventoryRow[];
+      let stock = 0;
+      let sales = 0;
+      for (const row of rows) {
+        stock += readNumber(row, stockCandidates);
+        sales += readNumber(row, salesCandidates);
+      }
+      return { error: null, rows, stock, sales };
+    }
+
     return { error: "Failed to query month totals after retrying missing columns", rows: [] as RawInventoryRow[], stock: 0, sales: 0 };
   };
 
