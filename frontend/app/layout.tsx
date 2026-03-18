@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 import AppShell from "@/components/layout/AppShell";
+import DeploymentVersionGuard from "@/components/DeploymentVersionGuard";
 import { LanguageProvider } from "@/components/LanguageProvider";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
@@ -22,6 +23,7 @@ export default function RootLayout({
       <body className="antialiased">
         <ThemeProvider>
           <LanguageProvider>
+            <DeploymentVersionGuard />
             <AppShell>{children}</AppShell>
           </LanguageProvider>
         </ThemeProvider>

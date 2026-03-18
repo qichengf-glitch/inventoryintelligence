@@ -7,9 +7,14 @@
 export function excludeAllZeroRows(
   query: any,
   salesCol: string,
-  stockCol: string
+  stockCol?: string
 ): any {
-  return query.or(
-    `${salesCol}.gt.0,${stockCol}.gt.0,month_in.gt.0,month_out.gt.0`
-  );
+  const filters = [
+    `${salesCol}.gt.0`,
+    stockCol ? `${stockCol}.gt.0` : null,
+    "month_in.gt.0",
+    "month_out.gt.0",
+  ].filter(Boolean);
+
+  return query.or(filters.join(","));
 }

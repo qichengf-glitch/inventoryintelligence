@@ -25,6 +25,7 @@ export async function middleware(request: NextRequest) {
   // a client running stale JS. Redirect (303) to force a fresh page load.
   if (request.method === "POST" && request.headers.get("next-action")) {
     const refreshUrl = request.nextUrl.clone();
+    refreshUrl.searchParams.set("_reload", Date.now().toString());
     return NextResponse.redirect(refreshUrl, { status: 303 });
   }
 
@@ -71,6 +72,11 @@ export async function middleware(request: NextRequest) {
     const url = request.nextUrl.clone();
     url.pathname = "/home";
     return withCopiedCookies(response, NextResponse.redirect(url));
+  }
+
+  const accept = request.headers.get("accept") || "";
+  if (request.method === "GET" && accept.includes("text/html")) {
+    response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate");
   }
 
   return response;
