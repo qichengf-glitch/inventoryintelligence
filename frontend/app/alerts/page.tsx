@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 
-import ScopedCopilotWidget from "@/components/copilot/ScopedCopilotWidget";
 import { useLanguage } from "@/components/LanguageProvider";
 import type { AlertItem, AlertsResponse } from "@/lib/alerts/types";
 import { DEFAULT_HIGH_STOCK, DEFAULT_SAFETY_STOCK } from "@/lib/alerts/computeAlerts";
@@ -139,6 +138,8 @@ function buildInsightFallback(alerts: AlertsResponse, lang: "zh" | "en") {
   return parts.join(" ");
 }
 
+type ChatMsg = { role: "user" | "assistant"; content: string };
+
 function AiInsightCard({
   lang,
   alerts,
@@ -148,13 +149,22 @@ function AiInsightCard({
 }) {
   const [insight, setInsight] = useState("");
   const [loading, setLoading] = useState(true);
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll to latest chat message
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   useEffect(() => {
     let active = true;
 
     const loadInsight = async () => {
       setLoading(true);
-
       try {
         const res = await fetch("/api/copilot/alerts", {
           method: "POST",
@@ -163,36 +173,76 @@ function AiInsightCard({
             messages: [{ role: "user", content: AI_SUMMARY_PROMPT[lang] }],
           }),
         });
-
         const payload = await res.json();
         const answer =
           typeof payload?.answer === "string" && payload.answer.trim()
             ? payload.answer.trim()
             : buildInsightFallback(alerts, lang);
-
-        if (active) {
-          setInsight(answer);
-        }
+        if (active) setInsight(answer);
       } catch {
-        if (active) {
-          setInsight(buildInsightFallback(alerts, lang));
-        }
+        if (active) setInsight(buildInsightFallback(alerts, lang));
       } finally {
-        if (active) {
-          setLoading(false);
-        }
+        if (active) setLoading(false);
       }
     };
 
     void loadInsight();
-
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [alerts, lang]);
+
+  const handleAsk = async (questionRaw: string) => {
+    const question = questionRaw.trim();
+    if (!question || chatLoading) return;
+
+    // Build message history: system insight + prior turns + new user message
+    const history: ChatMsg[] = [
+      { role: "assistant", content: insight },
+      ...messages,
+      { role: "user", content: question },
+    ];
+
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: question },
+      { role: "assistant", content: lang === "zh" ? "思考中..." : "Thinking..." },
+    ]);
+    setInput("");
+    setChatLoading(true);
+
+    try {
+      const res = await fetch("/api/copilot/alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: history.map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+      const payload = await res.json();
+      const answer =
+        typeof payload?.answer === "string" && payload.answer.trim()
+          ? payload.answer.trim()
+          : lang === "zh" ? "暂无回答，请重试。" : "No answer returned, please retry.";
+      setMessages((prev) => [
+        ...prev.slice(0, -1),
+        { role: "assistant", content: answer },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev.slice(0, -1),
+        { role: "assistant", content: lang === "zh" ? "请求失败，请重试。" : "Request failed, please retry." },
+      ]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const suggestedFollowUps = lang === "zh"
+    ? ["哪些缺货 SKU 需要立即补货？", "高库存 SKU 应如何处理？", "如何设置合理的安全库存阈值？"]
+    : ["Which OOS SKUs need immediate restock?", "How should high-stock SKUs be handled?", "How to set safety stock thresholds?"];
 
   return (
     <section className="rounded-2xl border border-cyan-400/20 bg-[linear-gradient(135deg,rgba(8,47,73,0.9),rgba(15,23,42,0.95))] p-5 shadow-[0_18px_50px_rgba(8,47,73,0.28)]">
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.16em] text-cyan-300/80">AI Insight</p>
@@ -205,27 +255,78 @@ function AiInsightCard({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 text-sm text-slate-200 md:grid-cols-3">
-        <div className="rounded-xl border border-slate-700/70 bg-slate-950/30 px-3 py-2">
-          {lang === "zh" ? `高库存 ${alerts.counts.high}` : `High stock ${alerts.counts.high}`}
-        </div>
-        <div className="rounded-xl border border-slate-700/70 bg-slate-950/30 px-3 py-2">
-          {lang === "zh" ? `低库存 ${alerts.counts.low}` : `Low stock ${alerts.counts.low}`}
-        </div>
-        <div className="rounded-xl border border-slate-700/70 bg-slate-950/30 px-3 py-2">
-          {lang === "zh" ? `缺货 ${alerts.counts.oos}` : `Out of stock ${alerts.counts.oos}`}
-        </div>
-      </div>
-
+      {/* AI-generated insight */}
       <div className="mt-4 rounded-2xl border border-slate-700/80 bg-slate-950/35 p-4">
         {loading ? (
-          <p className="text-sm text-slate-400">
+          <p className="text-sm text-slate-400 animate-pulse">
             {lang === "zh" ? "AI 正在生成解读..." : "Generating AI interpretation..."}
           </p>
         ) : (
           <p className="whitespace-pre-wrap text-sm leading-7 text-slate-100">{insight}</p>
         )}
       </div>
+
+      {/* Follow-up chat — only show once insight is ready */}
+      {!loading && (
+        <div className="mt-4 rounded-2xl border border-slate-700/60 bg-slate-950/30">
+          {/* Chat history */}
+          {messages.length > 0 && (
+            <div className="max-h-[260px] space-y-2 overflow-y-auto p-4 pb-2">
+              {messages.map((msg, idx) => (
+                <div
+                  key={`${msg.role}-${idx}`}
+                  className={`rounded-xl px-3 py-2 text-sm whitespace-pre-wrap ${
+                    msg.role === "user"
+                      ? "ml-8 bg-cyan-500/80 text-slate-950"
+                      : "mr-8 border border-slate-700/60 bg-slate-900/70 text-slate-100"
+                  }`}
+                >
+                  {msg.content}
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+          )}
+
+          {/* Suggested follow-up chips */}
+          {messages.length === 0 && (
+            <div className="flex flex-wrap gap-2 px-4 pt-3 pb-1">
+              {suggestedFollowUps.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => handleAsk(prompt)}
+                  disabled={chatLoading}
+                  className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs text-cyan-200 hover:bg-cyan-500/20 disabled:opacity-50 transition"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Input form */}
+          <form
+            onSubmit={(e) => { e.preventDefault(); void handleAsk(input); }}
+            className="flex gap-2 p-3 border-t border-slate-700/40"
+          >
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={lang === "zh" ? "继续追问..." : "Ask a follow-up question..."}
+              className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 outline-none focus:border-cyan-400"
+            />
+            <button
+              type="submit"
+              disabled={chatLoading || !input.trim()}
+              className="rounded-xl border border-cyan-300/50 bg-cyan-500/15 px-4 py-2 text-xs font-medium text-cyan-100 hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-50 transition"
+            >
+              {chatLoading ? "..." : lang === "zh" ? "发送" : "Send"}
+            </button>
+          </form>
+        </div>
+      )}
     </section>
   );
 }
@@ -768,19 +869,7 @@ export default function AlertsPage() {
         )}
       </section>
 
-      <ScopedCopilotWidget
-        endpoint="/api/copilot/alerts"
-        pageScope="alerts"
-        title={lang === "zh" ? "预警 Copilot" : "Alerts Copilot"}
-        subtitle={lang === "zh" ? "仅回答库存预警页问题" : "Alerts-page only answers"}
-        scopeInstruction="Only answer alerts-page questions and redirect out-of-scope users to /home."
-        contextData={contextData}
-        suggestedPrompts={[
-          "哪些 SKU 目前缺货最严重？",
-          "LOW 列表里优先补货哪些？",
-          "如何设置某个 SKU 的阈值？",
-        ]}
-      />
+      {/* Follow-up chat is now embedded in AiInsightCard above */}
     </div>
   );
 }

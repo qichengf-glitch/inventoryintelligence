@@ -16,6 +16,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: { zh: "数据中心", en: "Data Center" }, href: "/data-center", icon: "🌐" },
   { label: { zh: "分析", en: "Analysis" }, href: "/analysis", icon: "🖲️" },
   { label: { zh: "库存预警中心", en: "Inventory Alert" }, href: "/alerts", icon: "🚨" },
+  { label: { zh: "报表中心", en: "Report Center" }, href: "/report-center", icon: "📋" },
   { label: { zh: "设置", en: "Settings" }, href: "/settings", icon: "⚙️" },
 ];
 

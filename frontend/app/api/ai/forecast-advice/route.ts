@@ -186,11 +186,11 @@ async function collectDashboardContext(scope: AssistantScope): Promise<Dashboard
   const rows: any[] = [];
 
   while (rows.length < maxRows) {
+    // Use SELECT * to avoid referencing columns (safety_stock, category) that
+    // live in separate tables (safety_stock, sku_categories) rather than inventory_monthly.
     const { data, error } = await excludeAllZeroRows(
       tableRef
-        .select(
-          buildSelect([skuColumn, timeKey, salesColumn, stockColumn, "safety_stock", "category", "batch", "remark"])
-        )
+        .select("*")
         .order(timeKey, { ascending: false })
         .range(offset, offset + pageSize - 1),
       salesColumn,
