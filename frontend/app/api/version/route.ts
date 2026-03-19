@@ -4,13 +4,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 function getDeploymentId() {
-  return (
-    process.env.NEXT_PUBLIC_DEPLOYMENT_ID ||
-    process.env.DIGITALOCEAN_GIT_COMMIT_SHA ||
-    process.env.SOURCE_COMMIT_HASH ||
-    process.env.GITHUB_SHA ||
-    "unknown"
-  );
+  return process.env.NEXT_PUBLIC_DEPLOYMENT_ID || "unknown";
 }
 
 export async function GET() {
