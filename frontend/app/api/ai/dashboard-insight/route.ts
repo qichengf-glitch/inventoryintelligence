@@ -119,6 +119,9 @@ ${slowMoverText}
   const trendSales = salesDelta !== null && salesDelta !== undefined
     ? salesDelta > 0 ? `up ${salesDelta.toFixed(1)}% MoM` : salesDelta < 0 ? `down ${Math.abs(salesDelta).toFixed(1)}% MoM` : "flat MoM"
     : "no prior data";
+  const trendRisk = atRiskDelta !== null && atRiskDelta !== undefined
+    ? atRiskDelta > 0 ? `+${atRiskDelta} vs prior month` : atRiskDelta < 0 ? `${atRiskDelta} vs prior month` : "flat vs prior month"
+    : "";
 
   const slowMoverText = topSlowMovers.length > 0
     ? `\nTop slow movers (by stock):\n` +
