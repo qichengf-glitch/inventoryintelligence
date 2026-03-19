@@ -69,5 +69,19 @@ export default function DashboardInsightCard({ summary, lang }: Props) {
 
   if (!summary.latestMonth && !loading) return null;
 
-  return <InsightCard report={report} loading={loading} error={error} lang={lang} onRefresh={generate} />;
+  return (
+    <InsightCard
+      report={report}
+      loading={loading}
+      error={error}
+      lang={lang}
+      onRefresh={generate}
+      summaryContext={{
+        latestMonth: summary.latestMonth,
+        previousMonth: summary.previousMonth,
+        kpis: summary.kpis,
+        stockStatus: summary.stockStatus,
+      }}
+    />
+  );
 }

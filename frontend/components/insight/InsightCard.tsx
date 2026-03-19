@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useRef, useState } from "react";
 
 type InsightCardProps = {
   report: string | null;
@@ -8,7 +8,11 @@ type InsightCardProps = {
   error: string | null;
   lang: string;
   onRefresh?: () => void;
+  /** Optional dashboard KPI context forwarded to the AI follow-up chat */
+  summaryContext?: unknown;
 };
+
+type ChatMsg = { role: "user" | "assistant"; content: string };
 
 /** Parse a section header line like "**一、标题**" */
 function isSectionHeader(line: string) {
@@ -159,8 +163,84 @@ function renderBlocks(blocks: Block[]): React.ReactNode {
 
 const SKELETON_WIDTHS = [92, 78, 85, 60, 88, 72, 80];
 
-export default function InsightCard({ report, loading, error, lang, onRefresh }: InsightCardProps) {
+const SUGGESTED_FOLLOWUPS: Record<string, string[]> = {
+  zh: [
+    "哪些缺货 SKU 需要立即补货？",
+    "过剩库存应该如何处理？",
+    "下个月的销量趋势会如何？",
+  ],
+  en: [
+    "Which OOS SKUs need immediate restock?",
+    "How should overstock SKUs be handled?",
+    "What's the sales trend for next month?",
+  ],
+};
+
+export default function InsightCard({ report, loading, error, lang, onRefresh, summaryContext }: InsightCardProps) {
   const blocks = report ? parseBlocks(report) : [];
+  const l = lang === "en" ? "en" : "zh";
+
+  // ── Inline follow-up chat ──────────────────────────────────────────────────
+  const [messages, setMessages] = useState<ChatMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollToEnd = () =>
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+
+  const handleAsk = async (questionRaw: string) => {
+    const question = questionRaw.trim();
+    if (!question || chatLoading || !report) return;
+
+    const recentChat = messages.slice(-8).map((m) => ({ role: m.role, text: m.content }));
+
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: question },
+      { role: "assistant", content: l === "zh" ? "思考中…" : "Thinking…" },
+    ]);
+    setInput("");
+    setChatLoading(true);
+    scrollToEnd();
+
+    try {
+      const res = await fetch("/api/ai/forecast-advice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scope: "home",
+          question,
+          dashboardSummaryContext: summaryContext,
+          recentChat,
+          lang: l,
+          model: "gpt-4.1-mini",
+        }),
+      });
+      const data = await res.json();
+      const answer =
+        typeof data?.answer === "string" && data.answer.trim()
+          ? data.answer.trim()
+          : l === "zh" ? "暂无回答，请重试。" : "No answer returned.";
+
+      setMessages((prev) => [
+        ...prev.slice(0, -1),
+        { role: "assistant", content: answer },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev.slice(0, -1),
+        { role: "assistant", content: l === "zh" ? "请求失败，请重试。" : "Request failed." },
+      ]);
+    } finally {
+      setChatLoading(false);
+      scrollToEnd();
+    }
+  };
+
+  const suggestedFollowUps = SUGGESTED_FOLLOWUPS[l] ?? SUGGESTED_FOLLOWUPS.zh;
+  // ─────────────────────────────────────────────────────────────────────────────
 
   return (
     <section className="relative overflow-hidden rounded-2xl border border-cyan-500/20 bg-slate-900/80 shadow-[0_0_24px_-4px_rgba(34,211,238,0.06)]">
@@ -171,7 +251,6 @@ export default function InsightCard({ report, loading, error, lang, onRefresh }:
         {/* Header row */}
         <div className="mb-4 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
-            {/* Pulse dot */}
             <span className="relative flex h-2 w-2 shrink-0">
               {!loading && report && (
                 <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400/50" />
@@ -186,7 +265,7 @@ export default function InsightCard({ report, loading, error, lang, onRefresh }:
           <div className="flex items-center gap-2">
             {loading && (
               <span className="text-xs text-slate-500">
-                {lang === "zh" ? "正在分析…" : "Analyzing…"}
+                {l === "zh" ? "正在分析…" : "Analyzing…"}
               </span>
             )}
             {onRefresh && !loading && (
@@ -199,13 +278,13 @@ export default function InsightCard({ report, loading, error, lang, onRefresh }:
                   <path d="M2 8a6 6 0 1 0 1.5-3.9" strokeLinecap="round" strokeLinejoin="round" />
                   <path d="M2 4v4h4" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                {lang === "zh" ? "重新生成" : "Regenerate"}
+                {l === "zh" ? "重新生成" : "Regenerate"}
               </button>
             )}
           </div>
         </div>
 
-        {/* Content */}
+        {/* Report content */}
         {loading ? (
           <div className="space-y-2">
             {SKELETON_WIDTHS.map((w, i) => (
@@ -233,6 +312,68 @@ export default function InsightCard({ report, loading, error, lang, onRefresh }:
           <div>{renderBlocks(blocks)}</div>
         ) : null}
       </div>
+
+      {/* ── Inline follow-up chat (shown only after report is ready) ── */}
+      {!loading && report && (
+        <div className="border-t border-slate-800/80">
+          {/* Chat history */}
+          {messages.length > 0 && (
+            <div className="max-h-[280px] space-y-2 overflow-y-auto px-5 py-3">
+              {messages.map((msg, idx) => (
+                <div
+                  key={`${msg.role}-${idx}`}
+                  className={`rounded-xl px-3 py-2 text-sm whitespace-pre-wrap leading-relaxed ${
+                    msg.role === "user"
+                      ? "ml-10 bg-cyan-500/80 text-slate-950"
+                      : "mr-10 border border-slate-700/60 bg-slate-900 text-slate-200"
+                  }`}
+                >
+                  {msg.content}
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+          )}
+
+          {/* Suggested follow-up chips (only before first message) */}
+          {messages.length === 0 && (
+            <div className="flex flex-wrap gap-2 px-5 pt-3 pb-1">
+              {suggestedFollowUps.map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => void handleAsk(prompt)}
+                  disabled={chatLoading}
+                  className="rounded-full border border-cyan-500/25 bg-cyan-500/8 px-3 py-1 text-xs text-cyan-300/80 transition hover:border-cyan-400/50 hover:bg-cyan-500/15 hover:text-cyan-200 disabled:opacity-40"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Input bar */}
+          <form
+            onSubmit={(e) => { e.preventDefault(); void handleAsk(input); }}
+            className="flex items-center gap-2 px-5 py-3"
+          >
+            <input
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={l === "zh" ? "继续追问…" : "Ask a follow-up question…"}
+              className="min-w-0 flex-1 rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 outline-none focus:border-cyan-500/60 transition"
+            />
+            <button
+              type="submit"
+              disabled={chatLoading || !input.trim()}
+              className="shrink-0 rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-4 py-2 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {chatLoading ? "…" : l === "zh" ? "发送" : "Send"}
+            </button>
+          </form>
+        </div>
+      )}
     </section>
   );
 }
