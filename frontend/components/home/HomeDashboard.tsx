@@ -2,7 +2,6 @@
 
 import { useMemo, useState, useEffect } from "react";
 
-import CopilotPanel from "@/components/copilot/CopilotPanel";
 import DashboardInsightCard from "@/components/home/DashboardInsightCard";
 import KpiGrid from "@/components/home/KpiGrid";
 import StockStatusChart from "@/components/home/StockStatusChart";
@@ -195,20 +194,6 @@ export default function HomeDashboard({ displayName = "" }: HomeDashboardProps) 
       </section>
 
       <DashboardInsightCard summary={summary} lang={lang} />
-
-      <CopilotPanel
-        summaryContext={{
-          latestMonth: summary.latestMonth,
-          kpis: summary.kpis,
-          stockStatus: summary.stockStatus,
-        }}
-        insightContext={{
-          latestMonth: summary.latestMonth,
-          kpis: summary.kpis,
-          stockStatus: summary.stockStatus,
-        }}
-        dashboardLoading={isLoading}
-      />
     </div>
   );
 }
