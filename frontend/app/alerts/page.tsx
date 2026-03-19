@@ -18,6 +18,11 @@ type SlowMover = {
 
 type ViewKey = "oos" | "low" | "high";
 
+const AI_SUMMARY_PROMPT = {
+  zh: "请用2到4句话解读当前库存预警中心的核心风险与机会，优先说明高库存、低库存、缺货三类的重点，并给出1到2条最高优先级行动建议。",
+  en: "Summarize the key risks and opportunities in the current inventory alerts dashboard in 2 to 4 sentences. Prioritize high stock, low stock, and out-of-stock issues, then give 1 to 2 highest-priority actions.",
+} as const;
+
 const VIEW_META: Record<
   ViewKey,
   { titleZh: string; titleEn: string; badgeClass: string; sortHintZh: string; sortHintEn: string }
@@ -107,6 +112,121 @@ function TopListCard({
         )}
       </div>
     </article>
+  );
+}
+
+function buildInsightFallback(alerts: AlertsResponse, lang: "zh" | "en") {
+  const topHigh = alerts.views.high[0]?.sku;
+  const topLow = alerts.views.low[0]?.sku;
+  const topOos = alerts.views.oos[0]?.sku;
+
+  if (lang === "zh") {
+    const parts = [
+      `当前高库存 ${alerts.counts.high} 个，低库存 ${alerts.counts.low} 个，缺货 ${alerts.counts.oos} 个。`,
+      topHigh ? `高库存最突出的 SKU 是 ${topHigh}，建议优先核查去化和促销。` : "",
+      topLow ? `低库存优先关注 ${topLow}。` : "",
+      topOos ? `缺货风险优先关注 ${topOos}，避免继续断供。` : "",
+    ].filter(Boolean);
+    return parts.join("");
+  }
+
+  const parts = [
+    `Current alerts show ${alerts.counts.high} high-stock SKUs, ${alerts.counts.low} low-stock SKUs, and ${alerts.counts.oos} out-of-stock SKUs.`,
+    topHigh ? `The most obvious overstock SKU is ${topHigh}, so clearance or demand stimulation should be reviewed first.` : "",
+    topLow ? `Prioritize replenishment review for ${topLow}.` : "",
+    topOos ? `Restore supply for ${topOos} as the first stockout recovery action.` : "",
+  ].filter(Boolean);
+  return parts.join(" ");
+}
+
+function AiInsightCard({
+  lang,
+  alerts,
+}: {
+  lang: "zh" | "en";
+  alerts: AlertsResponse;
+}) {
+  const [insight, setInsight] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadInsight = async () => {
+      setLoading(true);
+
+      try {
+        const res = await fetch("/api/copilot/alerts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: AI_SUMMARY_PROMPT[lang] }],
+          }),
+        });
+
+        const payload = await res.json();
+        const answer =
+          typeof payload?.answer === "string" && payload.answer.trim()
+            ? payload.answer.trim()
+            : buildInsightFallback(alerts, lang);
+
+        if (active) {
+          setInsight(answer);
+        }
+      } catch {
+        if (active) {
+          setInsight(buildInsightFallback(alerts, lang));
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadInsight();
+
+    return () => {
+      active = false;
+    };
+  }, [alerts, lang]);
+
+  return (
+    <section className="rounded-2xl border border-cyan-400/20 bg-[linear-gradient(135deg,rgba(8,47,73,0.9),rgba(15,23,42,0.95))] p-5 shadow-[0_18px_50px_rgba(8,47,73,0.28)]">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.16em] text-cyan-300/80">AI Insight</p>
+          <h3 className="mt-1 text-lg font-semibold text-slate-50">
+            {lang === "zh" ? "AI 解读" : "AI Interpretation"}
+          </h3>
+        </div>
+        <div className="rounded-full border border-cyan-400/25 bg-cyan-400/10 px-3 py-1 text-xs text-cyan-100">
+          {lang === "zh" ? `统计月份 ${alerts.as_of}` : `As of ${alerts.as_of}`}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 text-sm text-slate-200 md:grid-cols-3">
+        <div className="rounded-xl border border-slate-700/70 bg-slate-950/30 px-3 py-2">
+          {lang === "zh" ? `高库存 ${alerts.counts.high}` : `High stock ${alerts.counts.high}`}
+        </div>
+        <div className="rounded-xl border border-slate-700/70 bg-slate-950/30 px-3 py-2">
+          {lang === "zh" ? `低库存 ${alerts.counts.low}` : `Low stock ${alerts.counts.low}`}
+        </div>
+        <div className="rounded-xl border border-slate-700/70 bg-slate-950/30 px-3 py-2">
+          {lang === "zh" ? `缺货 ${alerts.counts.oos}` : `Out of stock ${alerts.counts.oos}`}
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-slate-700/80 bg-slate-950/35 p-4">
+        {loading ? (
+          <p className="text-sm text-slate-400">
+            {lang === "zh" ? "AI 正在生成解读..." : "Generating AI interpretation..."}
+          </p>
+        ) : (
+          <p className="whitespace-pre-wrap text-sm leading-7 text-slate-100">{insight}</p>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -483,19 +603,15 @@ export default function AlertsPage() {
             />
           </section>
 
-          <section className="grid grid-cols-1 items-stretch gap-4 xl:grid-cols-3">
-            <TopListCard title={lang === "zh" ? "Top10 缺货" : "Top10 OOS"} items={alerts.top10.oos} lang={lang} />
-            <TopListCard title={lang === "zh" ? "Top10 低库存" : "Top10 LOW"} items={alerts.top10.low} lang={lang} />
-            <TopListCard title={lang === "zh" ? "Top10 高库存" : "Top10 HIGH"} items={alerts.top10.high} lang={lang} />
-          </section>
+          <AiInsightCard lang={lang} alerts={alerts} />
 
           <section className="space-y-4">
             <AlertWindow
-              viewKey="oos"
+              viewKey="high"
               lang={lang}
-              rows={alerts.views.oos}
-              search={viewSearch.oos}
-              onSearchChange={(value) => setViewSearch((prev) => ({ ...prev, oos: value }))}
+              rows={alerts.views.high}
+              search={viewSearch.high}
+              onSearchChange={(value) => setViewSearch((prev) => ({ ...prev, high: value }))}
               onEdit={openThresholdEditor}
             />
             <AlertWindow
@@ -507,11 +623,11 @@ export default function AlertsPage() {
               onEdit={openThresholdEditor}
             />
             <AlertWindow
-              viewKey="high"
+              viewKey="oos"
               lang={lang}
-              rows={alerts.views.high}
-              search={viewSearch.high}
-              onSearchChange={(value) => setViewSearch((prev) => ({ ...prev, high: value }))}
+              rows={alerts.views.oos}
+              search={viewSearch.oos}
+              onSearchChange={(value) => setViewSearch((prev) => ({ ...prev, oos: value }))}
               onEdit={openThresholdEditor}
             />
           </section>
