@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "OPENAI_API_KEY is not set" }, { status: 500 });
     }
 
-    const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const model = process.env.OPENAI_REPORT_MODEL || "gpt-4.1";
     const prompt = buildPrompt(matrix, total_skus, lang);
 
     const res = await fetch("https://api.openai.com/v1/responses", {

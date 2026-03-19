@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
+import ObsolescenceInsightCard from "@/components/analysis/ObsolescenceInsightCard";
 import type { ObsolescenceItem, ObsolescenceResponse, ObsolescenceSummary } from "@/app/api/inventory/obsolescence/route";
 
 const CARD = "rounded-2xl border border-slate-800 bg-slate-900/70 p-4";
@@ -206,6 +207,9 @@ export default function ObsolescencePage() {
               </span>
             </div>
           </section>
+
+          {/* AI Insight */}
+          <ObsolescenceInsightCard data={data} lang={lang} />
 
           {/* Filters */}
           <section className={`${CARD} flex flex-wrap items-center gap-3`}>

@@ -3,6 +3,7 @@
 import { useMemo, useState, useEffect } from "react";
 
 import CopilotPanel from "@/components/copilot/CopilotPanel";
+import DashboardInsightCard from "@/components/home/DashboardInsightCard";
 import KpiGrid from "@/components/home/KpiGrid";
 import StockStatusChart from "@/components/home/StockStatusChart";
 import { useLanguage } from "@/components/LanguageProvider";
@@ -192,6 +193,8 @@ export default function HomeDashboard({ displayName = "" }: HomeDashboardProps) 
           <StockStatusChart data={summary.stockStatus} />
         </div>
       </section>
+
+      <DashboardInsightCard summary={summary} lang={lang} />
 
       <CopilotPanel
         summaryContext={{
