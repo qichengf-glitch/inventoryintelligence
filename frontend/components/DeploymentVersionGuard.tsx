@@ -43,6 +43,8 @@ export default function DeploymentVersionGuard() {
 
       if (
         serverDeploymentId &&
+        serverDeploymentId !== "unknown" &&
+        CURRENT_DEPLOYMENT_ID !== "unknown" &&
         serverDeploymentId !== CURRENT_DEPLOYMENT_ID
       ) {
         reloading = true;

@@ -3,10 +3,20 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+function getDeploymentId() {
+  return (
+    process.env.NEXT_PUBLIC_DEPLOYMENT_ID ||
+    process.env.DIGITALOCEAN_GIT_COMMIT_SHA ||
+    process.env.SOURCE_COMMIT_HASH ||
+    process.env.GITHUB_SHA ||
+    "unknown"
+  );
+}
+
 export async function GET() {
   return NextResponse.json(
     {
-      deploymentId: process.env.NEXT_PUBLIC_DEPLOYMENT_ID || "unknown",
+      deploymentId: getDeploymentId(),
     },
     {
       headers: {
