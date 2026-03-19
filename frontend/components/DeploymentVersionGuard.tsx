@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { usePathname } from "next/navigation";
 
 const CURRENT_DEPLOYMENT_ID = process.env.NEXT_PUBLIC_DEPLOYMENT_ID || "unknown";
 const VERSION_CHECK_INTERVAL_MS = 60_000;
@@ -24,7 +25,13 @@ async function fetchDeploymentId(signal: AbortSignal): Promise<string | null> {
 }
 
 export default function DeploymentVersionGuard() {
+  const pathname = usePathname();
+
   useEffect(() => {
+    if (pathname === "/" || pathname === "/auth" || pathname === "/login") {
+      return;
+    }
+
     let reloading = false;
 
     const reloadIfStale = async () => {
@@ -62,7 +69,7 @@ export default function DeploymentVersionGuard() {
       document.removeEventListener("visibilitychange", onVisible);
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [pathname]);
 
   return null;
 }

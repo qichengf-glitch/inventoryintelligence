@@ -6,9 +6,13 @@ import { getSupabasePublicEnv } from "@/lib/supabase/env";
 function isAnonymousPath(pathname: string) {
   return (
     pathname === "/" ||
+    pathname === "/login" ||
     pathname.startsWith("/auth") ||
+    pathname === "/api/version" ||
     pathname.startsWith("/_next/") ||
-    pathname === "/favicon.ico"
+    pathname === "/favicon.ico" ||
+    pathname === "/robots.txt" ||
+    pathname === "/sitemap.xml"
   );
 }
 
@@ -29,38 +33,67 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(refreshUrl, { status: 303 });
   }
 
+  const { pathname } = request.nextUrl;
+  const isPublic = isAnonymousPath(pathname);
+
   let response = NextResponse.next({
     request: {
       headers: request.headers,
     },
   });
 
-  const { url, anonKey } = getSupabasePublicEnv();
-  const supabase = createServerClient(url, anonKey, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
-      setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-        response = NextResponse.next({
-          request: {
-            headers: request.headers,
-          },
-        });
-        cookiesToSet.forEach(({ name, value, options }) => {
-          response.cookies.set(name, value, options);
-        });
-      },
-    },
-  });
+  const setHtmlNoStore = () => {
+    const accept = request.headers.get("accept") || "";
+    if (request.method === "GET" && accept.includes("text/html")) {
+      response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate");
+    }
+  };
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  if (pathname === "/") {
+    setHtmlNoStore();
+    return response;
+  }
 
-  const { pathname } = request.nextUrl;
-  const isPublic = isAnonymousPath(pathname);
+  let user = null;
+
+  try {
+    const { url, anonKey } = getSupabasePublicEnv();
+    const supabase = createServerClient(url, anonKey, {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet) {
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+          response = NextResponse.next({
+            request: {
+              headers: request.headers,
+            },
+          });
+          cookiesToSet.forEach(({ name, value, options }) => {
+            response.cookies.set(name, value, options);
+          });
+        },
+      },
+    });
+
+    const {
+      data: { user: currentUser },
+    } = await supabase.auth.getUser();
+
+    user = currentUser;
+  } catch (error) {
+    console.error("[middleware] auth lookup failed:", error);
+
+    if (isPublic) {
+      setHtmlNoStore();
+      return response;
+    }
+
+    const authUrl = request.nextUrl.clone();
+    authUrl.pathname = "/auth";
+    return withCopiedCookies(response, NextResponse.redirect(authUrl));
+  }
 
   if (!isPublic && !user) {
     const url = request.nextUrl.clone();
@@ -74,11 +107,7 @@ export async function middleware(request: NextRequest) {
     return withCopiedCookies(response, NextResponse.redirect(url));
   }
 
-  const accept = request.headers.get("accept") || "";
-  if (request.method === "GET" && accept.includes("text/html")) {
-    response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate");
-  }
-
+  setHtmlNoStore();
   return response;
 }
 
