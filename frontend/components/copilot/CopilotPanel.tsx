@@ -111,7 +111,7 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
 
   const [question, setQuestion] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedModel, setSelectedModel] = useState("gpt-4.1-mini");
+  const [selectedModel] = useState("gpt-4.1");
   const [usedModel, setUsedModel] = useState<string | null>(null);
 
   const [sessions, setSessions] = useState<ChatSession[]>(() => [buildNewSession(lang)]);
@@ -277,43 +277,10 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
     const find = (id: string) => kpis.find((k) => k.id === id)?.value ?? 0;
     const pct = stockStatus.percentages;
 
-    const riskPct = ((find("kpi_2") / Math.max(find("kpi_1"), 1)) * 100).toFixed(1);
-    const stockCoverMonths = find("kpi_4") > 0
-      ? (find("kpi_3") / find("kpi_4")).toFixed(1)
-      : "N/A";
-
     const prompt =
       lang === "zh"
-        ? `你是一位专业库存管理分析师，请根据以下数据生成一份简洁的本月库存管理简报，结构如下（直接输出内容，不要重复结构标题之外的分析）：
-
-**一、本月整体库存健康状况**
-（2-3句总结整体状态：正常率、风险比例、与上月对比趋势）
-
-**二、核心风险识别**
-（分别说明高库存、低库存、缺货的数量和主要影响，各1-2句）
-
-**三、销售与库存匹配度分析**
-（基于库存覆盖月数和销售趋势，说明供需是否平衡，2-3句）
-
-**四、本月优先行动建议**
-（列出3-5条带【紧急】【重要】【关注】标签的具体行动项）
-
-数据：统计月份=${latestMonth}；SKU总数=${find("kpi_1")}；风险SKU=${find("kpi_2")}（占比${riskPct}%）；当前总库存=${find("kpi_3").toLocaleString()}；月销售量=${find("kpi_4").toLocaleString()}；库存覆盖约${stockCoverMonths}个月；库存健康分布：正常=${pct.normal_stock?.toFixed(1)}%，低库存=${pct.low_stock?.toFixed(1)}%，缺货=${pct.out_of_stock?.toFixed(1)}%，过库存=${pct.over_stock?.toFixed(1)}%。`
-        : `You are a professional inventory analyst. Generate a concise monthly inventory management brief using the structure below (output the content directly under each heading):
-
-**1. Overall Inventory Health**
-(2-3 sentences: healthy rate, risk ratio, trend vs. last month)
-
-**2. Core Risk Identification**
-(1-2 sentences each on: overstock, low stock, and out-of-stock — counts and business impact)
-
-**3. Sales-Inventory Alignment**
-(2-3 sentences on stock cover months and supply/demand balance)
-
-**4. Priority Actions This Month**
-(3-5 specific action items tagged [URGENT] [IMPORTANT] [MONITOR])
-
-Data: month=${latestMonth}; total_skus=${find("kpi_1")}; at_risk_skus=${find("kpi_2")} (${riskPct}%); total_stock=${find("kpi_3").toLocaleString()}; monthly_sales=${find("kpi_4").toLocaleString()}; stock_cover_months=${stockCoverMonths}; distribution: healthy=${pct.normal_stock?.toFixed(1)}%, low=${pct.low_stock?.toFixed(1)}%, oos=${pct.out_of_stock?.toFixed(1)}%, overstock=${pct.over_stock?.toFixed(1)}%.`;
+        ? `请用2-4句话解读以下本月库存数据的核心亮点和风险，并给出1-2条最高优先级行动建议。数据：最新月份=${latestMonth}；SKU总数=${find("kpi_1")}；风险SKU=${find("kpi_2")}；当前库存=${find("kpi_3")}；月销售=${find("kpi_4")}；健康=${pct.normal_stock?.toFixed(1)}%；低库存=${pct.low_stock?.toFixed(1)}%；缺货=${pct.out_of_stock?.toFixed(1)}%；过库存=${pct.over_stock?.toFixed(1)}%。`
+        : `In 2-4 sentences, highlight the key insights and risks from this month's inventory data, then give 1-2 top-priority action items. Data: latest_month=${latestMonth}; skus=${find("kpi_1")}; at_risk_skus=${find("kpi_2")}; stock=${find("kpi_3")}; sales=${find("kpi_4")}; healthy=${pct.normal_stock?.toFixed(1)}%; low=${pct.low_stock?.toFixed(1)}%; out=${pct.out_of_stock?.toFixed(1)}%; over=${pct.over_stock?.toFixed(1)}%.`;
 
     const sessionId = activeSession.id;
     const assistantId = `${Date.now()}-insight`;
@@ -409,19 +376,6 @@ Data: month=${latestMonth}; total_skus=${find("kpi_1")}; at_risk_skus=${find("kp
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <label className="text-xs text-slate-400" htmlFor="copilot-model">
-              {t(TEXT.model, lang)}
-            </label>
-            <select
-              id="copilot-model"
-              value={selectedModel}
-              onChange={(event) => setSelectedModel(event.target.value)}
-              className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-            >
-              <option value="gpt-4o-mini">gpt-4o-mini</option>
-              <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-              <option value="gpt-4.1">gpt-4.1</option>
-            </select>
             <button
               type="button"
               onClick={createNewChat}
