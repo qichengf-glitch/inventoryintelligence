@@ -6,6 +6,7 @@ import "./globals.css";
 import AppShell from "@/components/layout/AppShell";
 import DeploymentVersionGuard from "@/components/DeploymentVersionGuard";
 import { LanguageProvider } from "@/components/LanguageProvider";
+import PublicEnvScript from "@/components/PublicEnvScript";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
 export const metadata: Metadata = {
@@ -21,6 +22,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased">
+        <PublicEnvScript />
         <ThemeProvider>
           <LanguageProvider>
             <DeploymentVersionGuard />

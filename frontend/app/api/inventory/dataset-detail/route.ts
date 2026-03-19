@@ -3,6 +3,9 @@ import { createSupabaseClient } from "@/lib/supabaseClient";
 import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
 import { evaluateInventoryStatus } from "@/lib/inventoryStatus";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);

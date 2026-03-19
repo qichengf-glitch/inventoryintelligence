@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
@@ -54,7 +55,7 @@ function getEmailRedirectTo() {
 
 export default function AuthPage() {
   const router = useRouter();
-  const supabase = useMemo(() => createBrowserSupabaseClient(), []);
+  const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
 
   const [mode, setMode] = useState<AuthMode>("login");
   const [email, setEmail] = useState("");
@@ -67,7 +68,15 @@ export default function AuthPage() {
   const [profileWarning, setProfileWarning] = useState("");
   const [showResend, setShowResend] = useState(false);
 
+  useEffect(() => {
+    setSupabase(createBrowserSupabaseClient());
+  }, []);
+
   const upsertProfile = async ({ id, email: profileEmail, name: profileName }: ProfileSeed) => {
+    if (!supabase) {
+      throw new Error("Supabase client is not ready yet.");
+    }
+
     return supabase.from("user_profiles").upsert(
       {
         id,
@@ -91,6 +100,8 @@ export default function AuthPage() {
   }, []);
 
   useEffect(() => {
+    if (!supabase) return;
+
     let active = true;
 
     const checkSession = async () => {
@@ -126,6 +137,12 @@ export default function AuthPage() {
     setErrorMessage("");
     setSuccessMessage("");
     setProfileWarning("");
+
+    if (!supabase) {
+      setErrorMessage("认证服务初始化中，请稍后重试。");
+      setPending(false);
+      return;
+    }
 
     const cleanEmail = email.trim().toLowerCase();
     const cleanName = name.trim();
@@ -211,6 +228,10 @@ export default function AuthPage() {
   const handleResendVerification = async () => {
     const cleanEmail = email.trim().toLowerCase();
     if (!cleanEmail || resendPending) return;
+    if (!supabase) {
+      setErrorMessage("认证服务初始化中，请稍后重试。");
+      return;
+    }
 
     setResendPending(true);
     setErrorMessage("");

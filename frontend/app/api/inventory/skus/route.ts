@@ -3,6 +3,9 @@ import { createSupabaseClient } from "@/lib/supabaseClient";
 import { getInventoryConfig } from "@/lib/inventoryConfig";
 import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET() {
   try {
     const supabase = createSupabaseClient();

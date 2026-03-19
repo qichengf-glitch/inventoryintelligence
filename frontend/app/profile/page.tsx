@@ -1,7 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
@@ -21,7 +22,7 @@ const EMPTY_FORM: ProfileForm = {
 
 export default function ProfilePage() {
   const router = useRouter();
-  const supabase = useMemo(() => createBrowserSupabaseClient(), []);
+  const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
 
   const [userId, setUserId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -31,6 +32,12 @@ export default function ProfilePage() {
   const [successMessage, setSuccessMessage] = useState("");
 
   useEffect(() => {
+    setSupabase(createBrowserSupabaseClient());
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) return;
+
     let active = true;
 
     const load = async () => {
@@ -91,6 +98,11 @@ export default function ProfilePage() {
     setErrorMessage("");
     setSuccessMessage("");
 
+    if (!supabase) {
+      setErrorMessage("认证服务初始化中，请稍后重试。");
+      return;
+    }
+
     const payload = {
       id: userId,
       email: form.email.trim() || null,
@@ -115,6 +127,11 @@ export default function ProfilePage() {
   const handleSignOut = async () => {
     setErrorMessage("");
     setSuccessMessage("");
+
+    if (!supabase) {
+      setErrorMessage("认证服务初始化中，请稍后重试。");
+      return;
+    }
 
     const { error } = await supabase.auth.signOut();
     if (error) {
