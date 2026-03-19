@@ -47,49 +47,53 @@ function buildPrompt(req: InsightRequest, lang: "zh" | "en"): string {
       return `  - SKU ${i.sku}（批号 ${i.batch}）：在库 ${age}，库存 ${i.current_stock.toLocaleString()} 件${cap}`;
     }).join("\n");
 
-    return `你是一位专注于库存减损与资金效率的资深顾问，正在为企业管理层生成呆滞库存分析报告。请基于以下数据，生成一份详细、专业、有实际处置建议的中文报告。
+    return `你是一位专注于库存减损与资金效率的资深顾问，正在为企业管理层生成呆滞库存分析报告。请严格按照以下格式输出，不要添加额外的格式符号。
 
-## 呆滞库存数据（数据月份：${snapshotMonth}）
+## 输入数据（${snapshotMonth}）
+- 高风险（≥2年）：${summary.high.batches} 批次，${summary.high.total_stock.toLocaleString()} 件${summary.high.total_capital > 0 ? `，占用 ${fmtCapital(summary.high.total_capital)}` : "（成本缺失）"}
+- 中风险（1-2年）：${summary.medium.batches} 批次，${summary.medium.total_stock.toLocaleString()} 件${summary.medium.total_capital > 0 ? `，占用 ${fmtCapital(summary.medium.total_capital)}` : "（成本缺失）"}
+- 观察（<1年）：${summary.watch.batches} 批次，${summary.watch.total_stock.toLocaleString()} 件${summary.watch.total_capital > 0 ? `，占用 ${fmtCapital(summary.watch.total_capital)}` : ""}
+- 合计占用资金：${totalCapital > 0 ? fmtCapital(totalCapital) : "待补全"}
 
-### 风险分级汇总
-- **高风险**（在库≥2年）：${summary.high.batches} 批次，${summary.high.total_stock.toLocaleString()} 件${summary.high.total_capital > 0 ? `，占用资金 ${fmtCapital(summary.high.total_capital)}` : "（成本数据缺失）"}
-- **中风险**（在库1-2年）：${summary.medium.batches} 批次，${summary.medium.total_stock.toLocaleString()} 件${summary.medium.total_capital > 0 ? `，占用资金 ${fmtCapital(summary.medium.total_capital)}` : "（成本数据缺失）"}
-- **观察**（在库<1年）：${summary.watch.batches} 批次，${summary.watch.total_stock.toLocaleString()} 件${summary.watch.total_capital > 0 ? `，占用资金 ${fmtCapital(summary.watch.total_capital)}` : ""}
-- **合计占用资金**：${totalCapital > 0 ? fmtCapital(totalCapital) : "成本数据待补全"}
-
-### 高风险重点批次（按资金排序）
+高风险批次：
 ${highItems.length > 0 ? highItems.map(i => {
   const age = `${Math.floor(i.age_months / 12)}年${i.age_months % 12}个月`;
-  const cap = i.capital !== null ? `，占用资金 ${fmtCapital(i.capital)}` : "";
-  return `  - SKU ${i.sku}（批号 ${i.batch}）：已在库 ${age}，库存 ${i.current_stock.toLocaleString()} 件${cap}`;
-}).join("\n") : "  （无高风险批次）"}
-
-### 中风险批次（前3位）
+  const cap = i.capital !== null ? `，占用 ${fmtCapital(i.capital)}` : "";
+  return `  - ${i.sku}（${i.batch}）在库 ${age}，${i.current_stock.toLocaleString()} 件${cap}`;
+}).join("\n") : "  无"}
+中风险批次（前3）：
 ${medItems.length > 0 ? medItems.map(i => {
   const age = i.age_months >= 12 ? `${Math.floor(i.age_months / 12)}年${i.age_months % 12}个月` : `${i.age_months}个月`;
-  const cap = i.capital !== null ? `，占用资金 ${fmtCapital(i.capital)}` : "";
-  return `  - SKU ${i.sku}（批号 ${i.batch}）：已在库 ${age}，库存 ${i.current_stock.toLocaleString()} 件${cap}`;
-}).join("\n") : "  （无中风险批次）"}
+  const cap = i.capital !== null ? `，占用 ${fmtCapital(i.capital)}` : "";
+  return `  - ${i.sku}（${i.batch}）在库 ${age}，${i.current_stock.toLocaleString()} 件${cap}`;
+}).join("\n") : "  无"}
 
-## 报告要求
-请按以下四个部分撰写，语言专业、直接、面向管理层决策：
+## 严格输出格式（章节之间空一行）
 
 **一、呆滞库存整体状况**
-评估整体严重程度，总结各风险层级的批次数量与资金占用规模，与行业惯例对比是否处于合理水位。
+（3-4句）评估整体严重程度：合计 ${summary.high.batches + summary.medium.batches} 个高中风险批次、占用资金 ${totalCapital > 0 ? fmtCapital(totalCapital) : "（待补全）"} 处于什么样的水位。分析高风险批次占比，说明这批库存对企业流动资金的实质影响程度。给出明确判断：严重/一般/可控。
 
 **二、高风险批次深度分析**
-针对在库超过2年的批次，分析长期积压的原因（需求预测失准？采购过量？产品停产？），以及继续持有的机会成本与风险。点名关键SKU。
+（4-5句）针对在库超过2年的 ${summary.high.batches} 个批次展开分析：这些库龄过长的批次最可能的原因是什么（需求预测失准、采购过量、产品已停产或被替代）。逐一分析重点SKU继续持有的成本（仓储费、资金占用、价值折损风险）。判断哪些批次已无回收可能，哪些仍有机会通过促销或转用处置。
 
-**三、资金占用影响评估**
-量化分析呆滞库存对资金流动性的影响，说明若不处置的潜在损失（价值折损、仓储成本、过期风险），中风险批次若不及时处理可能的演变路径。
+**三、资金占用与风险演变路径**
+（3-4句）量化分析：${totalCapital > 0 ? fmtCapital(totalCapital) : ""}的占用资金按年利率成本计算每月损耗是多少。说明若不采取行动，中风险批次未来6-12个月将演变为高风险，届时处置难度和折损率会如何变化。指出库龄积压对新品采购空间的挤压效应。
 
-**四、分级处置建议**
-针对三个风险等级分别给出具体处置方案：
-- 高风险：立即行动的2-3个方案（清仓促销、折价处理、报废申请等）
-- 中风险：3-6个月内的处置计划
-- 观察：预防性监控措施
+**四、分级处置行动建议**
+（5-6条具体行动，每条一行，前缀严格使用 [紧急]、[重要] 或 [关注]）
+- [紧急] 针对高风险批次的立即行动（清仓促销/折价转让/报废申请）
+- [紧急] 另一条高风险处置行动
+- [重要] 针对中风险批次的3-6个月处置计划
+- [重要] 建立呆滞库存预警机制的具体方案
+- [关注] 观察级批次的预防性监控措施
+（按紧急程度排序，结合上述分析的具体SKU给出针对性建议）
 
-输出格式：使用**粗体**标注每部分标题，正文用自然段落，处置建议用短横线列表。总字数350-500字。`;
+注意：
+- 章节标题使用 **粗体**（如 **一、标题**）
+- 正文用普通段落
+- 行动建议用 "- [优先级] 内容" 格式
+- 不要用 # 号标题
+- 总字数400-550字`;
   }
 
   // English version
@@ -99,37 +103,41 @@ ${medItems.length > 0 ? medItems.map(i => {
     return `  - SKU ${i.sku} (batch ${i.batch}): ${age} in stock, ${i.current_stock.toLocaleString()} units${cap}`;
   }).join("\n");
 
-  return `You are a senior inventory consultant specializing in obsolete stock reduction and capital efficiency. Generate a detailed, actionable English analysis report for management.
+  return `You are a senior inventory consultant specializing in obsolete stock reduction and capital efficiency. Follow the output format strictly — no extra markdown symbols.
 
-## Obsolete Inventory Data (Snapshot: ${snapshotMonth})
+## Input Data (${snapshotMonth})
+- High Risk (≥2yr): ${summary.high.batches} batches, ${summary.high.total_stock.toLocaleString()} units${summary.high.total_capital > 0 ? `, ¥${summary.high.total_capital.toLocaleString()} tied up` : " (cost missing)"}
+- Medium Risk (1-2yr): ${summary.medium.batches} batches, ${summary.medium.total_stock.toLocaleString()} units${summary.medium.total_capital > 0 ? `, ¥${summary.medium.total_capital.toLocaleString()} tied up` : " (cost missing)"}
+- Watch (<1yr): ${summary.watch.batches} batches, ${summary.watch.total_stock.toLocaleString()} units
+- Total capital at risk: ${totalCapital > 0 ? `¥${totalCapital.toLocaleString()}` : "incomplete"}
+Top items: ${topItemsTextEn}
 
-### Risk Tier Summary
-- **High Risk** (≥2 years): ${summary.high.batches} batches, ${summary.high.total_stock.toLocaleString()} units${summary.high.total_capital > 0 ? `, ¥${summary.high.total_capital.toLocaleString()} capital tied up` : " (cost data missing)"}
-- **Medium Risk** (1-2 years): ${summary.medium.batches} batches, ${summary.medium.total_stock.toLocaleString()} units${summary.medium.total_capital > 0 ? `, ¥${summary.medium.total_capital.toLocaleString()} capital tied up` : " (cost data missing)"}
-- **Watch** (<1 year): ${summary.watch.batches} batches, ${summary.watch.total_stock.toLocaleString()} units
-- **Total capital at risk**: ${totalCapital > 0 ? `¥${totalCapital.toLocaleString()}` : "cost data incomplete"}
-
-### Top Items (by capital/stock)
-${topItemsTextEn}
-
-## Report Requirements
-Four sections, professional and decision-oriented:
+## Strict Output Format (blank line between sections)
 
 **1. Overall Obsolescence Status**
-Assess severity, summarize batches and capital by tier, benchmark against normal thresholds.
+(3-4 sentences) Assess severity: what does having ${summary.high.batches + summary.medium.batches} high/medium-risk batches and ${totalCapital > 0 ? `¥${totalCapital.toLocaleString()}` : "unknown capital"} tied up mean for the business? Rate severity as Critical / Moderate / Manageable. State the highest-risk SKUs by name.
 
 **2. High-Risk Batch Deep Dive**
-Analyze root causes for 2+ year old batches (forecast error, over-purchasing, discontinued products), opportunity cost of holding.
+(4-5 sentences) Analyze root causes for 2+ year old batches: demand forecast error, over-purchasing, discontinued or substituted products. For each top high-risk SKU, estimate the carrying cost (storage + capital cost) per month and the probability of recovery via clearance vs. write-off. Identify which items still have resale potential vs. those that should be written off immediately.
 
-**3. Capital Impact Assessment**
-Quantify impact on liquidity, potential losses (value degradation, storage costs, expiry risk), escalation path for medium-risk items.
+**3. Capital Impact & Escalation Risk**
+(3-4 sentences) Quantify the monthly cost of holding ${totalCapital > 0 ? `¥${totalCapital.toLocaleString()}` : "this inventory"} (assume a capital cost rate). Explain how medium-risk batches will escalate to high-risk in 6-12 months if untreated, and what higher write-down rates to expect. Describe the downstream effect on new procurement capacity.
 
-**4. Tiered Disposal Recommendations**
-- High Risk: 2-3 immediate actions (clearance, markdown, write-off)
-- Medium Risk: 3-6 month disposal plan
-- Watch: Preventive monitoring measures
+**4. Tiered Disposal Action Plan**
+(5-6 items, each on its own line, prefix MUST be exactly one of: [Urgent], [Important], [Monitor])
+- [Urgent] Immediate action for high-risk batches (clearance sale / markdown / write-off request)
+- [Urgent] Another high-risk disposal action with expected recovery rate
+- [Important] 3-6 month disposal plan for medium-risk batches
+- [Important] Build an early-warning trigger before batches reach 12-month threshold
+- [Monitor] Preventive monitoring rules for watch-tier batches
+(Sort by urgency; name specific SKUs where relevant)
 
-Format: **Bold** headers, natural paragraph body, dash lists for actions. Total: 300-450 words.`;
+Rules:
+- Section titles use **bold** (e.g. **1. Title**)
+- Body text in plain prose paragraphs
+- Action items use "- [Priority] content" format
+- No # headings
+- Total: 350-500 words`;
 }
 
 export async function POST(req: NextRequest) {

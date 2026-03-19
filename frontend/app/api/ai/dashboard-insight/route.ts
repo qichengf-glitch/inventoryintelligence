@@ -74,37 +74,42 @@ function buildPrompt(req: InsightRequest, lang: "zh" | "en"): string {
         topSlowMovers.map(s => `  - ${s.sku}：库存 ${s.current_stock.toLocaleString()} 件，已 ${s.months_without_movement} 个月无出库`).join("\n")
       : "";
 
-    return `你是一位资深库存管理顾问，正在为企业决策者生成每月库存健康度报告。请基于以下数据生成一份详细、专业、有实际指导价值的中文分析报告。
+    return `你是一位资深库存管理顾问，正在为企业决策者生成每月库存健康度报告。请严格按照以下格式要求输出，不要添加任何额外的格式符号。
 
-## 数据概览（${month}${prevMonth}）
+## 输入数据（${month}${prevMonth}）
 - SKU总数：${totalSkus.toLocaleString()} 个
 - 风险SKU：${atRisk} 个${trendRisk ? `（${trendRisk}）` : ""}（低库存 + 缺货合计）
 - 当前库存总量：${stockUnits.toLocaleString()} 件（${trendStock}）
 - 月销售量：${monthlySales.toLocaleString()} 件（${trendSales}）
-
-## 库存状态分布
 - 正常：${normal_stock} 个 SKU（${pct.normal_stock.toFixed(1)}%）
 - 低库存：${low_stock} 个 SKU（${pct.low_stock.toFixed(1)}%）
 - 缺货：${out_of_stock} 个 SKU（${pct.out_of_stock.toFixed(1)}%）
-- 库存过剩：${over_stock} 个 SKU（${pct.over_stock.toFixed(1)}%）
+- 过剩：${over_stock} 个 SKU（${pct.over_stock.toFixed(1)}%）
 ${slowMoverText}
 
-## 报告要求
-请按以下四个部分撰写，每部分2-4句，语言直接、数据驱动、避免泛泛而谈：
+## 严格输出格式（每部分之间空一行）
 
 **一、本月整体库存健康状况**
-综合评估健康度（良好/中等/需关注），结合正常率与风险率给出判断，与上月趋势对比。
+（3-4句）给出明确的健康评级——良好、中等或需关注。说明正常库存率为 ${pct.normal_stock.toFixed(1)}% 意味着什么，结合风险SKU占比（${((atRisk / Math.max(totalSkus, 1)) * 100).toFixed(1)}%）进行评估，与上月趋势对比得出方向性结论。语言要有判断性，不能只描述数字。
 
 **二、核心风险识别**
-详细分析缺货与低库存风险：有多少SKU面临供应中断风险，过剩库存占用多少资源，滞销情况如何。用具体数字说话。
+（3-5句）深入分析三类风险：①缺货风险——${out_of_stock} 个SKU为零库存意味着什么后果；②低库存预警——${low_stock} 个SKU可能在多少周内断货；③过剩积压——${over_stock} 个SKU过剩对资金的影响。${topSlowMovers.length > 0 ? `结合滞销TOP品数据，点出滞销的具体SKU。` : ""}每个风险点要有量化表述。
 
-**三、销售与库存匹配分析**
-分析销售走势与库存水位的匹配程度，是否出现库存积压或供不应求的信号，识别结构性问题。
+**三、销售与库存匹配度分析**
+（3-4句）分析月销量 ${monthlySales.toLocaleString()} 件（${trendSales}）与总库存 ${stockUnits.toLocaleString()} 件的健康比例关系，估算当前库存可支撑销售的月数，判断整体是供过于求还是供不应求，识别结构性失衡信号。
 
 **四、本月优先行动建议**
-给出3-4条具体、可执行的行动项，标明优先级（紧急/重要/关注），每条建议直接对应上述发现的问题。
+（给出4-5条具体行动，每条一行，前缀必须严格使用以下三种之一：[紧急]、[重要]、[关注]）
+- [紧急/重要/关注] 具体行动描述，说明为什么要做、做什么、预期效果
+- [紧急/重要/关注] 另一条行动
+（按紧急程度排序，最紧急的排在最前面）
 
-输出格式：使用**粗体**标注每部分标题，正文用自然段落，行动建议用短横线列表。总字数300-450字。`;
+注意：
+- 章节标题使用 **粗体** 格式（如 **一、标题**）
+- 正文用普通文字段落
+- 行动建议用 "- [优先级] 内容" 格式
+- 不要使用 # 号标题
+- 总字数350-500字`;
   }
 
   const month = req.latestMonth ?? "Latest Month";
@@ -120,37 +125,39 @@ ${slowMoverText}
       topSlowMovers.map(s => `  - ${s.sku}: ${s.current_stock.toLocaleString()} units, ${s.months_without_movement} months no outbound`).join("\n")
     : "";
 
-  return `You are a senior inventory management consultant generating a monthly inventory health report for business decision-makers. Based on the data below, generate a detailed, professional, and actionable English analysis report.
+  return `You are a senior inventory management consultant generating a monthly inventory health report for business decision-makers. Follow the output format strictly — no extra markdown symbols.
 
-## Data Overview (${month})
+## Input Data (${month})
 - Total SKUs: ${totalSkus.toLocaleString()}
-- At-Risk SKUs: ${atRisk} (Low Stock + Out of Stock combined)
+- At-Risk SKUs: ${atRisk} (Low + Out of Stock; ${trendRisk || "no prior data"})
 - Current Stock Units: ${stockUnits.toLocaleString()} (${trendStock})
 - Monthly Sales: ${monthlySales.toLocaleString()} (${trendSales})
-
-## Stock Status Distribution
-- Normal: ${normal_stock} SKUs (${pct.normal_stock.toFixed(1)}%)
-- Low Stock: ${low_stock} SKUs (${pct.low_stock.toFixed(1)}%)
-- Out of Stock: ${out_of_stock} SKUs (${pct.out_of_stock.toFixed(1)}%)
-- Overstocked: ${over_stock} SKUs (${pct.over_stock.toFixed(1)}%)
+- Normal: ${normal_stock} SKUs (${pct.normal_stock.toFixed(1)}%) | Low: ${low_stock} | Out: ${out_of_stock} | Over: ${over_stock}
 ${slowMoverText}
 
-## Report Requirements
-Write four sections, 2-4 sentences each, direct and data-driven:
+## Strict Output Format (blank line between sections)
 
 **1. Overall Inventory Health Assessment**
-Evaluate health (Good/Fair/Needs Attention), reference normal vs. risk rates, compare to prior month trend.
+(3-4 sentences) Give a clear health rating — Good, Fair, or Needs Attention. Explain what a ${pct.normal_stock.toFixed(1)}% normal rate means in context, evaluate the ${((atRisk / Math.max(totalSkus, 1)) * 100).toFixed(1)}% at-risk share, and state a directional conclusion vs. prior month. Be judgmental, not merely descriptive.
 
 **2. Key Risk Identification**
-Detail stockout and low-stock risk: how many SKUs face supply disruption, how much capital is tied up in overstock, slow-mover situation.
+(3-5 sentences) Analyze three risk types: ① Stockout risk — consequences of ${out_of_stock} SKUs at zero inventory; ② Low-stock warning — estimated weeks until ${low_stock} SKUs run out at current sales pace; ③ Overstock burden — capital impact of ${over_stock} bloated SKUs. ${topSlowMovers.length > 0 ? "Reference slow-mover data and name specific SKUs." : ""} Every risk point must be quantified.
 
-**3. Sales-Inventory Alignment Analysis**
-Analyze whether sales trends match inventory levels, identify signs of excess buildup or supply shortage, surface structural issues.
+**3. Sales-Inventory Alignment**
+(3-4 sentences) Assess the ratio of monthly sales ${monthlySales.toLocaleString()} units (${trendSales}) to total stock ${stockUnits.toLocaleString()} units. Estimate months of coverage, judge whether supply exceeds or lags demand, and flag structural imbalance signals.
 
-**4. Priority Action Items This Month**
-Provide 3-4 specific, actionable items with priority labels (Urgent/Important/Monitor), each tied to findings above.
+**4. Priority Action Items**
+(4-5 items, each on its own line, prefix MUST be exactly one of: [Urgent], [Important], [Monitor])
+- [Urgent/Important/Monitor] Specific action — why it matters, what to do, expected outcome
+- [Urgent/Important/Monitor] Another action
+(Sort by urgency, most urgent first)
 
-Format: **Bold** section headers, natural paragraphs for body, dash list for action items. Total: 250-400 words.`;
+Rules:
+- Section titles use **bold** format (e.g. **1. Title**)
+- Body text in plain prose paragraphs
+- Action items use "- [Priority] content" format
+- No # headings
+- Total: 300-450 words`;
 }
 
 export async function POST(req: NextRequest) {
