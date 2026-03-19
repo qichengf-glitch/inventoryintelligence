@@ -111,7 +111,7 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
 
   const [question, setQuestion] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedModel, setSelectedModel] = useState("gpt-4o-mini");
+  const [selectedModel] = useState("gpt-4.1");
   const [usedModel, setUsedModel] = useState<string | null>(null);
 
   const [sessions, setSessions] = useState<ChatSession[]>(() => [buildNewSession(lang)]);
@@ -376,19 +376,6 @@ export default function CopilotPanel({ summaryContext, insightContext, dashboard
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <label className="text-xs text-slate-400" htmlFor="copilot-model">
-              {t(TEXT.model, lang)}
-            </label>
-            <select
-              id="copilot-model"
-              value={selectedModel}
-              onChange={(event) => setSelectedModel(event.target.value)}
-              className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100"
-            >
-              <option value="gpt-4o-mini">gpt-4o-mini</option>
-              <option value="gpt-4.1-mini">gpt-4.1-mini</option>
-              <option value="gpt-4.1">gpt-4.1</option>
-            </select>
             <button
               type="button"
               onClick={createNewChat}
