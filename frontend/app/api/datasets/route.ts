@@ -15,7 +15,7 @@ export async function GET() {
     const supabase = createSupabaseAdminClient();
 
     const result = await supabase
-      .from("datasets")
+      .from("upload_records")
       .select("id, month, row_count, created_at, storage_path")
       .order("month", { ascending: false })
       .order("created_at", { ascending: false });

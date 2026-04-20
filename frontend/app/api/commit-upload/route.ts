@@ -120,18 +120,18 @@ export async function POST(request: Request) {
 
     // Option B: keep one dataset row per month.
     // Delete datasets first so FK cascade removes related inventory_monthly rows.
-    const deleteDataset = await supabase.from("datasets").delete().eq("month", monthDate);
+    const deleteDataset = await supabase.from("upload_records").delete().eq("month", monthDate);
     await assertNoSupabaseError(deleteDataset, "Failed to delete previous datasets row");
 
     // Defensive cleanup in case legacy rows exist without proper cascade lineage.
     const deleteLegacyMonthly = await supabase
-      .from("inventory_monthly")
+      .from("inventory_batches")
       .delete()
       .eq("month", monthDate);
     await assertNoSupabaseError(deleteLegacyMonthly, "Failed to delete previous inventory_monthly rows");
 
     const datasetInsert = await supabase
-      .from("datasets")
+      .from("upload_records")
       .insert({
         month: monthDate,
         original_filename: body.originalFileName || `${tempFileId}.raw.csv`,
@@ -164,7 +164,7 @@ export async function POST(request: Request) {
     }));
 
     for (const part of chunk(monthlyRows, 500)) {
-      const insertMonthly = await supabase.from("inventory_monthly").insert(part);
+      const insertMonthly = await supabase.from("inventory_batches").insert(part);
       await assertNoSupabaseError(insertMonthly, "Failed to insert inventory_monthly");
     }
 
@@ -207,14 +207,14 @@ export async function POST(request: Request) {
     }
 
     const deleteMonthSummary = await supabase
-      .from("inventory_summary")
+      .from("inventory_sku_monthly")
       .delete()
       .eq("month", monthDate);
     await assertNoSupabaseError(deleteMonthSummary, "Failed to delete previous inventory_summary rows");
 
     const summaryRows = Array.from(summaryMap.values());
     if (summaryRows.length > 0) {
-      const upsertSummary = await supabase.from("inventory_summary").upsert(summaryRows, {
+      const upsertSummary = await supabase.from("inventory_sku_monthly").upsert(summaryRows, {
         onConflict: "month,sku",
       });
       await assertNoSupabaseError(upsertSummary, "Failed to upsert inventory_summary");

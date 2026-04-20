@@ -14,7 +14,10 @@ import {
 } from "@/lib/dashboard/getStockStatusBreakdown";
 
 const PAGE_SIZE = 1000;
-const MAX_ROWS = 12000;
+// Reduced from 12000 to protect the 1vCPU/1GB DigitalOcean instance.
+// 786 SKUs × 11 months ≈ 8,646 rows — 5000 is a safe ceiling for the current dataset.
+// Raise this only if data volume grows significantly.
+const MAX_ROWS = 5000;
 
 export type DashboardKpi = {
   id: "kpi_1" | "kpi_2" | "kpi_3" | "kpi_4";
@@ -468,8 +471,8 @@ async function tryReadSalesByMonthFromInventorySummary(
   }
 
   const tableRef = schema
-    ? supabase.schema(schema).from("inventory_summary")
-    : supabase.from("inventory_summary");
+    ? supabase.schema(schema).from("inventory_sku_monthly")
+    : supabase.from("inventory_sku_monthly");
   const { data, error } = await tableRef
     .select("month,total_month_sales")
     .in("month", monthDates);
@@ -524,7 +527,7 @@ async function readStrictLatestMonthKpiTotals(
   const stockCandidates = buildColumnCandidates(stockColumn, STOCK_VALUE_FALLBACK_COLUMNS);
   const salesCandidates = buildColumnCandidates(salesColumn, SALES_VALUE_FALLBACK_COLUMNS);
   const monthlyTableRef = () =>
-    schema ? supabase.schema(schema).from("inventory_monthly") : supabase.from("inventory_monthly");
+    schema ? supabase.schema(schema).from("inventory_batches") : supabase.from("inventory_batches");
 
   const readMonthTotals = async (month: string, filterValue: string | number) => {
     const localStockCandidates = [...stockCandidates];
@@ -896,18 +899,18 @@ function buildSourceCandidates(): DataSourceCandidate[] {
 
   const candidates: DataSourceCandidate[] = [
     {
-      label: "inventory_summary",
+      label: "inventory_sku_monthly",
       schema,
-      table: "inventory_summary",
+      table: "inventory_sku_monthly",
       skuColumn: "sku",
       timeColumn: "month",
       stockColumn: "total_month_end_stock",
       salesColumn: "total_month_sales",
     },
     {
-      label: "inventory_monthly",
+      label: "inventory_batches",
       schema,
-      table: "inventory_monthly",
+      table: "inventory_batches",
       skuColumn: "sku",
       timeColumn: "month",
       stockColumn: "month_end_stock",

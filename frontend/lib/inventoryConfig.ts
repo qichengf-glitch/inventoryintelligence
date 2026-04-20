@@ -17,7 +17,7 @@ export function getInventoryConfig(): InventoryConfig {
   const rawTable = normalize(process.env.INVENTORY_TABLE);
   const resolvedTable =
     !rawTable || rawTable.toLowerCase() === "summary"
-      ? "inventory_monthly"
+      ? "inventory_batches"
       : rawTable;
 
   const rawSkuColumn = normalize(process.env.INVENTORY_SKU_COLUMN);
@@ -26,7 +26,7 @@ export function getInventoryConfig(): InventoryConfig {
   const rawSalesColumn = normalize(process.env.INVENTORY_SALES_COLUMN);
   const rawStockColumn = normalize(process.env.INVENTORY_STOCK_COLUMN);
 
-  const monthlyMode = resolvedTable.toLowerCase() === "inventory_monthly";
+  const monthlyMode = resolvedTable.toLowerCase() === "inventory_batches";
   const skuColumn =
     monthlyMode && (!rawSkuColumn || rawSkuColumn.toLowerCase() === "sku")
       ? "sku"

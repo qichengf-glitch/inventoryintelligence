@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -76,6 +77,13 @@ Keep it concise and professional, aimed at inventory managers.`;
 }
 
 export async function POST(req: NextRequest) {
+  const rl = checkRateLimit(getClientIp(req), { route: "abc-xyz-report", limit: 5, windowMs: 60_000 });
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "请求过于频繁，请稍后再试。/ Too many requests, please try again shortly." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+    );
+  }
   try {
     const body: ReportRequest = await req.json();
     const { matrix, total_skus, lang = "zh" } = body;
@@ -92,7 +100,7 @@ export async function POST(req: NextRequest) {
     const model = process.env.OPENAI_REPORT_MODEL || "gpt-4.1";
     const prompt = buildPrompt(matrix, total_skus, lang);
 
-    const res = await fetch("https://api.openai.com/v1/responses", {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -101,7 +109,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model,
         temperature: 0.4,
-        input: prompt,
+        messages: [{ role: "user", content: prompt }],
       }),
     });
 
@@ -111,15 +119,7 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await res.json();
-    const directText = typeof data?.output_text === "string" ? data.output_text.trim() : "";
-    const outputArray = Array.isArray(data?.output) ? data.output : [];
-    const fromOutput = outputArray
-      .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
-      .map((c: any) => (c?.type === "output_text" && typeof c?.text === "string" ? c.text : ""))
-      .join("\n")
-      .trim();
-
-    const report = directText || fromOutput;
+    const report = data?.choices?.[0]?.message?.content?.trim() ?? "";
     if (!report) {
       return NextResponse.json({ error: "Empty response from AI" }, { status: 502 });
     }

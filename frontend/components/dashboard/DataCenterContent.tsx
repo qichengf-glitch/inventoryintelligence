@@ -42,6 +42,17 @@ const ACTION_CARDS = [
     btnEn: "Open Search",
     external: false,
   },
+  {
+    icon: "✦",
+    titleZh: "数据完整性",
+    titleEn: "Data Completeness",
+    descZh: "查看并补齐缺失品类、成本和价格的 SKU 记录，支持单格编辑或批量 CSV 导入。",
+    descEn: "View and fill SKUs missing category, cost, or price. Inline editing or bulk CSV import.",
+    href: "/data-center/completeness",
+    btnZh: "管理缺失数据",
+    btnEn: "Manage Missing Data",
+    external: false,
+  },
 ] as const;
 
 function StatusDot({ status }: { status: DataTableInfo["status"] }) {
@@ -149,7 +160,7 @@ export default function DataCenterContent({ supabaseDashboardUrl }: DataCenterCo
       )}
 
       {/* Quick action cards */}
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-2">
         {ACTION_CARDS.map((card) => (
           <article key={card.href} className={CARD_BASE}>
             <div className="flex items-start gap-3">

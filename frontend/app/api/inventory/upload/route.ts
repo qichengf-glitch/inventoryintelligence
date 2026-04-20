@@ -89,7 +89,7 @@ async function deleteByFileName(
   getTable: (tableName: string) => any,
   originalFileName: string
 ): Promise<void> {
-  const existing = await getTable("datasets")
+  const existing = await getTable("upload_records")
     .select("id")
     .eq("original_filename", originalFileName);
 
@@ -104,17 +104,17 @@ async function deleteByFileName(
   if (datasetIds.length === 0) return;
 
   // inventory_summary uses ON DELETE SET NULL; remove old summary rows explicitly for exact overwrite semantics.
-  const summaryDelete = await getTable("inventory_summary").delete().in("dataset_id", datasetIds);
+  const summaryDelete = await getTable("inventory_sku_monthly").delete().in("dataset_id", datasetIds);
   if (summaryDelete.error) {
     throw new Error(`Failed to delete previous inventory_summary rows by file name: ${summaryDelete.error.message}`);
   }
 
-  const monthlyDelete = await getTable("inventory_monthly").delete().in("dataset_id", datasetIds);
+  const monthlyDelete = await getTable("inventory_batches").delete().in("dataset_id", datasetIds);
   if (monthlyDelete.error) {
     throw new Error(`Failed to delete previous inventory_monthly rows by file name: ${monthlyDelete.error.message}`);
   }
 
-  const datasetDelete = await getTable("datasets").delete().in("id", datasetIds);
+  const datasetDelete = await getTable("upload_records").delete().in("id", datasetIds);
   if (datasetDelete.error) {
     throw new Error(`Failed to delete previous datasets rows by file name: ${datasetDelete.error.message}`);
   }
@@ -178,19 +178,19 @@ export async function POST(req: NextRequest) {
 
     let insertedTotal = 0;
     for (const [monthDate, monthRows] of rowsByMonth.entries()) {
-      const deleteDatasetRes = await getTable("datasets").delete().eq("month", monthDate);
+      const deleteDatasetRes = await getTable("upload_records").delete().eq("month", monthDate);
       if (deleteDatasetRes.error) {
         throw new Error(`Failed to delete previous datasets row: ${deleteDatasetRes.error.message}`);
       }
 
-      const deleteLegacyMonthlyRes = await getTable("inventory_monthly").delete().eq("month", monthDate);
+      const deleteLegacyMonthlyRes = await getTable("inventory_batches").delete().eq("month", monthDate);
       if (deleteLegacyMonthlyRes.error) {
         throw new Error(
           `Failed to delete previous inventory_monthly rows: ${deleteLegacyMonthlyRes.error.message}`
         );
       }
 
-      const datasetInsertRes = await getTable("datasets")
+      const datasetInsertRes = await getTable("upload_records")
         .insert({
           month: monthDate,
           original_filename: normalizedFileName,
@@ -226,7 +226,7 @@ export async function POST(req: NextRequest) {
       }));
 
       for (const part of chunk(monthlyInsertRows, 500)) {
-        const insertMonthlyRes = await getTable("inventory_monthly").insert(part);
+        const insertMonthlyRes = await getTable("inventory_batches").insert(part);
         if (insertMonthlyRes.error) {
           throw new Error(`Failed to insert inventory_monthly: ${insertMonthlyRes.error.message}`);
         }
@@ -269,14 +269,14 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const deleteSummaryRes = await getTable("inventory_summary").delete().eq("month", monthDate);
+      const deleteSummaryRes = await getTable("inventory_sku_monthly").delete().eq("month", monthDate);
       if (deleteSummaryRes.error) {
         throw new Error(`Failed to delete previous inventory_summary rows: ${deleteSummaryRes.error.message}`);
       }
 
       const summaryRows = Array.from(summaryMap.values());
       if (summaryRows.length > 0) {
-        const upsertSummaryRes = await getTable("inventory_summary").upsert(summaryRows, {
+        const upsertSummaryRes = await getTable("inventory_sku_monthly").upsert(summaryRows, {
           onConflict: "month,sku",
         });
         if (upsertSummaryRes.error) {

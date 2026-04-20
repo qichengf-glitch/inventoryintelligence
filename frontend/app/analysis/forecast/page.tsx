@@ -32,8 +32,16 @@ import {
 type DemandPoint = { t: string; y: number };
 type CustomerType = "普通" | "大客户";
 
-type ModelKey = "NAIVE" | "SNAIVE" | "SMA" | "SES" | "HOLT" | "HW";
+type ModelKey = "NAIVE" | "SNAIVE" | "SMA" | "SES" | "HOLT" | "HW" | "LGBM";
+type ClassicalModelKey = Exclude<ModelKey, "LGBM">;
 type RangeKey = "6M" | "12M" | "18M" | "24M" | "ALL";
+
+const CLASSICAL_MODEL_KEYS: ClassicalModelKey[] = ["NAIVE", "SNAIVE", "SMA", "SES", "HOLT", "HW"];
+
+function asClassicalModel(value: unknown): ClassicalModelKey | null {
+  const s = typeof value === "string" ? value.trim() : "";
+  return CLASSICAL_MODEL_KEYS.includes(s as ClassicalModelKey) ? (s as ClassicalModelKey) : null;
+}
 // -------------------- i18n --------------------
 type LangString = { zh: string; en: string };
 function tt(s: LangString, lang?: Lang) {
@@ -54,6 +62,18 @@ const TEXT = {
 
   model: { zh: "主模型", en: "Primary Model" },
   horizonLead: { zh: "预测窗口 / 交期（月）", en: "Horizon / Lead Time (months)" },
+  lgbmBadge: { zh: "ML · LightGBM", en: "ML · LightGBM" },
+  lgbmLoading: { zh: "ML 预测加载中…", en: "Loading ML forecast…" },
+  lgbmNoData: { zh: "暂无 ML 数据，请先运行训练脚本", en: "No ML data — run train.py first" },
+  lgbmMetrics: { zh: "回测误差", en: "Backtest Error" },
+  lgbmTrainedAt: { zh: "训练时间", en: "Trained at" },
+
+  advancedMlSummary: { zh: "高级 · 机器学习（实验）", en: "Advanced · ML (experimental)" },
+  advancedMlHint: {
+    zh: "LightGBM 需先在服务端训练并写入数据库；无数据时主预测仍使用上方经典模型。",
+    en: "LightGBM requires server-side training and DB rows; without data, forecasts use the classical model above.",
+  },
+  useMlPrimary: { zh: "使用 LightGBM 作为主预测模型", en: "Use LightGBM as primary forecast" },
 
   kpi_current: { zh: "当前库存", en: "Current Stock" },
   kpi_safety: { zh: "安全库存", en: "Safety Stock" },
@@ -315,6 +335,8 @@ function modelApplicability(seriesLen: number) {
       reason: ok(season) ? undefined : "需要至少 12 个月（季节周期=12）",
       warn: seriesLen >= 12 && seriesLen < 24 ? "建议至少 24 个月，季节性可能不稳定" : undefined,
     },
+    // LGBM 可用性由服务端控制，此处标记为始终可用（实际由 mlForecast 状态决定）
+    LGBM: { usable: true },
   };
 
   return map;
@@ -347,6 +369,11 @@ function forecastByModel(
       return holtForecast(series, h, a ?? 0.3, b ?? 0.2);
     case "HW":
       return holtWintersAdditive(series, h, season, a ?? 0.3, b ?? 0.15, g ?? 0.2);
+    case "LGBM":
+      // LGBM is server-side; caller handles this case before calling forecastByModel
+      return naiveForecast(series, h);
+    default:
+      return naiveForecast(series, h);
   }
 }
 
@@ -360,6 +387,15 @@ type ChartRow = {
   SES?: number;
   HOLT?: number;
   HW?: number;
+  LGBM?: number;
+};
+
+type MlForecastResult = {
+  predictions: Array<{ t: string; y: number }>;
+  metrics: { mae: number | null; rmse: number | null; mape: number | null } | null;
+  model_version: string | null;
+  trained_at: string | null;
+  message?: string;
 };
 
 type ForecastModelSeries = {
@@ -482,7 +518,12 @@ export default function Page() {
     best_beta: number | null;
     best_gamma: number | null;
     mape_at_recommendation: number | null;
+    mae_at_recommendation: number | null;
+    bias_at_recommendation: number | null;
+    sample_months: number | null;
     runner_up_model: string | null;
+    runner_up_mape: number | null;
+    last_run_date: string | null;
   };
 
   // API-backed state
@@ -503,7 +544,28 @@ export default function Page() {
   // Whether the user has manually overridden the recommended model
   const [recOverridden, setRecOverridden] = useState(false);
 
+  // ML forecast state
+  const [mlForecast, setMlForecast] = useState<MlForecastResult | null>(null);
+  const [mlLoading, setMlLoading] = useState(false);
+
   const [sku, setSku] = useState<string>("FWD100");
+
+  /** Classical (non-ML) primary; backtest recommendation only touches this. */
+  const [classicalModel, setClassicalModel] = useState<ClassicalModelKey>("HW");
+  /** When true and ML rows exist, effective primary becomes LGBM (see `primaryModel`). */
+  const [mlPrimaryEnabled, setMlPrimaryEnabled] = useState(false);
+
+  const mlDataReady = Boolean(mlForecast?.predictions?.length);
+  const primaryModel: ModelKey = useMemo(
+    () => (mlPrimaryEnabled && mlDataReady ? "LGBM" : classicalModel),
+    [mlPrimaryEnabled, mlDataReady, classicalModel]
+  );
+
+  useEffect(() => {
+    if (mlPrimaryEnabled && !mlDataReady && !mlLoading) {
+      setMlPrimaryEnabled(false);
+    }
+  }, [mlPrimaryEnabled, mlDataReady, mlLoading]);
 
   // load skus
   useEffect(() => {
@@ -624,10 +686,25 @@ export default function Page() {
         setModelRec(rec);
         // Auto-apply recommended model if user hasn't manually overridden
         if (rec && !recOverridden) {
-          setModel(rec.recommended_model);
+          const cm = asClassicalModel(rec.recommended_model);
+          if (cm) setClassicalModel(cm);
         }
       } catch {
         setModelRec(null);
+      }
+    };
+
+    const loadMlForecast = async () => {
+      setMlLoading(true);
+      try {
+        const res = await fetch(`/api/forecast/ml?sku=${encodeURIComponent(sku)}`, { cache: "no-store" });
+        if (!res.ok) { setMlForecast(null); return; }
+        const data = await res.json();
+        setMlForecast(data as MlForecastResult);
+      } catch {
+        setMlForecast(null);
+      } finally {
+        setMlLoading(false);
       }
     };
 
@@ -635,15 +712,16 @@ export default function Page() {
     loadStock();
     loadSafetyStock();
     loadRecommendation();
+    loadMlForecast();
   }, [sku]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reset override flag when SKU changes so recommendation is auto-applied
-  useEffect(() => { setRecOverridden(false); }, [sku]);
+  useEffect(() => {
+    setRecOverridden(false);
+    setMlPrimaryEnabled(false);
+  }, [sku]);
 
   const [customerType, setCustomerType] = useState<CustomerType>("普通");
-
-  // Primary model for KPI/reorder
-  const [model, setModel] = useState<ModelKey>("HOLT");
 
   // Monthly horizon & leadtime (months)
   const [horizonMonths, setHorizonMonths] = useState<number>(6);
@@ -683,13 +761,14 @@ export default function Page() {
     return row1 ? toNum(row1.safetyStock, 0) : 0;
   }, [safetyStockFromApi, ssMap, sku, customerType]);
 
-  // applicability + auto-fix primary model if not usable
+  // applicability + auto-fix classical primary if not usable
   const applicability = useMemo(() => modelApplicability(series.length), [series.length]);
   useEffect(() => {
-    if (!applicability[model]?.usable) {
+    if (!applicability[classicalModel]?.usable) {
       const firstOk =
-        (["HOLT", "SES", "SMA", "NAIVE"] as ModelKey[]).find((m) => applicability[m]?.usable) ?? "NAIVE";
-      setModel(firstOk);
+        (["HW", "HOLT", "SES", "SMA", "NAIVE"] as ClassicalModelKey[]).find((m) => applicability[m]?.usable) ??
+        "NAIVE";
+      setClassicalModel(firstOk);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [series.length]);
@@ -698,6 +777,15 @@ export default function Page() {
   const forecast = useMemo(() => {
     if (!hasDemand) return [];
     const h = clamp(horizonMonths, 1, 24);
+
+    // When LGBM is primary, use ML predictions from API
+    if (primaryModel === "LGBM" && mlForecast && mlForecast.predictions.length > 0) {
+      return mlForecast.predictions.slice(0, h).map((p) => ({
+        t: p.t,
+        y: Math.round(Math.max(0, p.y)),
+      }));
+    }
+
     // Use optimised params from backtest recommendation when available
     const recParams: ForecastParams =
       modelRec && !recOverridden
@@ -707,15 +795,16 @@ export default function Page() {
             gamma: modelRec.best_gamma ?? undefined,
           }
         : {};
-    const pred = applicability[model]?.usable
-      ? forecastByModel(model, series, h, recParams)
+    const effectiveModel = primaryModel === "LGBM" ? "HOLT" : primaryModel; // fallback if no ML data
+    const pred = applicability[effectiveModel]?.usable
+      ? forecastByModel(effectiveModel, series, h, recParams)
       : naiveForecast(series, h);
     const lastDate = demandHistory.at(-1)?.t ?? "2025-01-01";
     return Array.from({ length: pred.length }, (_, i) => ({
       t: addMonthsISO(lastDate, i + 1),
       y: Math.round(Math.max(0, pred[i] ?? 0)),
     }));
-  }, [hasDemand, model, series, horizonMonths, demandHistory, applicability, modelRec, recOverridden]);
+  }, [hasDemand, primaryModel, series, horizonMonths, demandHistory, applicability, modelRec, recOverridden, mlForecast]);
 
   // lead-time demand = sum next leadTimeMonths
   const leadDemand = useMemo(() => {
@@ -812,6 +901,13 @@ export default function Page() {
 
   useEffect(() => {
     if (!sku) return;
+    // Wait until demand data has finished loading and we actually have history.
+    // This prevents sending the AI request with currentStock=0 / leadDemand=0
+    // while data is still in-flight (race condition).
+    if (demandLoading) return;
+    if (demandHistory.length === 0) return;
+    // Also wait for currentStock to resolve (null means still loading)
+    if (currentStockState === null) return;
 
     const timer = window.setTimeout(async () => {
       setAiRiskLoading(true);
@@ -834,7 +930,7 @@ export default function Page() {
             recentChat: [],
             forecastSummary: {
               sku,
-              model,
+              model: primaryModel,
               horizonMonths,
               leadTimeMonths,
               currentStock,
@@ -869,13 +965,15 @@ export default function Page() {
     sku,
     risk,
     currentStock,
+    currentStockState,
     safetyStock,
     leadDemand,
     reorderQty,
     projectedStockoutMonth,
     demandHistory,
+    demandLoading,
     lang,
-    model,
+    primaryModel,
     horizonMonths,
     leadTimeMonths,
     aiRiskFallback,
@@ -910,7 +1008,7 @@ export default function Page() {
           recentChat,
           forecastSummary: {
             sku,
-            model,
+            model: primaryModel,
             horizonMonths,
             leadTimeMonths,
             currentStock,
@@ -950,10 +1048,20 @@ export default function Page() {
   );
 
   // Multi-model chart rows
-  const { rows: chartRows, forecastStartDate, applicability: chartApplicability } = useMemo(
+  const { rows: baseChartRows, forecastStartDate, applicability: chartApplicability } = useMemo(
     () => buildMultiModelChartData(demandHistory, horizonMonths),
     [demandHistory, horizonMonths]
   );
+
+  // Merge LGBM predictions into chart rows
+  const chartRows: ChartRow[] = useMemo(() => {
+    if (!mlForecast || !mlForecast.predictions.length) return baseChartRows;
+    const lgbmMap = new Map(mlForecast.predictions.map((p) => [p.t, Math.round(p.y)]));
+    return baseChartRows.map((row) => ({
+      ...row,
+      LGBM: lgbmMap.get(row.t) ?? undefined,
+    }));
+  }, [baseChartRows, mlForecast]);
 
   // display rows: last N months + forecast
   const displayRows = useMemo(() => {
@@ -975,6 +1083,7 @@ export default function Page() {
     SES: true,
     HOLT: true,
     HW: true,
+    LGBM: true,
   });
 
   useEffect(() => {
@@ -997,6 +1106,7 @@ export default function Page() {
     SES: "#a3e635", // lime
     HOLT: "#fb7185", // rose
     HW: "#60a5fa", // blue
+    LGBM: "#c084fc", // purple — ML model
   };
 
   // Build "unavailable reasons" line
@@ -1026,7 +1136,7 @@ export default function Page() {
 
     const payload = {
       sku,
-      model,
+      model: primaryModel,
       horizonMonths,
       leadTimeMonths,
       currentStock,
@@ -1047,7 +1157,7 @@ export default function Page() {
   }, [
     hasDemand,
     sku,
-    model,
+    primaryModel,
     horizonMonths,
     leadTimeMonths,
     currentStock,
@@ -1122,7 +1232,12 @@ export default function Page() {
               {modelRec && recOverridden && (
                 <button
                   type="button"
-                  onClick={() => { setRecOverridden(false); setModel(modelRec.recommended_model); }}
+                  onClick={() => {
+                    setRecOverridden(false);
+                    setMlPrimaryEnabled(false);
+                    const cm = asClassicalModel(modelRec.recommended_model);
+                    if (cm) setClassicalModel(cm);
+                  }}
                   className="text-[10px] text-cyan-400 hover:text-cyan-300 underline"
                 >
                   {lang === "zh" ? "恢复推荐" : "Use recommended"}
@@ -1130,14 +1245,15 @@ export default function Page() {
               )}
             </div>
             <select
-              value={model}
+              value={classicalModel}
               onChange={(e) => {
-                setModel(e.target.value as ModelKey);
+                setClassicalModel(e.target.value as ClassicalModelKey);
                 setRecOverridden(true);
+                setMlPrimaryEnabled(false);
               }}
               className={SELECT_CLS}
             >
-              {(["HOLT", "SES", "SMA", "NAIVE", "SNAIVE", "HW"] as ModelKey[]).map((m) => (
+              {(["HOLT", "SES", "SMA", "NAIVE", "SNAIVE", "HW"] as ClassicalModelKey[]).map((m) => (
                 <option key={m} value={m} disabled={!applicability[m].usable}>
                   {m === "SNAIVE" ? "Seasonal Naive" : m === "HW" ? "Holt-Winters" : m}
                   {!applicability[m].usable ? "（不适用）" : ""}
@@ -1145,6 +1261,31 @@ export default function Page() {
                 </option>
               ))}
             </select>
+            <details className="mt-2 rounded-lg border border-slate-800/80 bg-slate-950/40">
+              <summary className="cursor-pointer list-none px-2 py-1.5 text-[11px] font-semibold text-slate-400 hover:text-slate-200 [&::-webkit-details-marker]:hidden flex items-center gap-1">
+                <span className="text-slate-500 select-none" aria-hidden>
+                  ▸
+                </span>
+                {tt(TEXT.advancedMlSummary, lang)}
+              </summary>
+              <div className="border-t border-slate-800/80 px-2 py-2 space-y-2">
+                <p className="text-[10px] text-slate-500 leading-relaxed">{tt(TEXT.advancedMlHint, lang)}</p>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 rounded border-slate-600"
+                    checked={mlPrimaryEnabled}
+                    disabled={!mlDataReady}
+                    onChange={(e) => setMlPrimaryEnabled(e.target.checked)}
+                  />
+                  <span className="text-[11px] text-slate-300">{tt(TEXT.useMlPrimary, lang)}</span>
+                </label>
+                {mlLoading && <p className="text-[10px] text-slate-500">{tt(TEXT.lgbmLoading, lang)}</p>}
+                {!mlLoading && !mlDataReady && mlForecast?.message && (
+                  <p className="text-[10px] text-amber-400/90">{mlForecast.message}</p>
+                )}
+              </div>
+            </details>
             {warnings.length > 0 && <p className="mt-1 text-[11px] text-amber-400">{warnings.join("；")}</p>}
           </div>
 
@@ -1186,8 +1327,15 @@ export default function Page() {
             <div>
               <p className="text-sm font-semibold text-slate-100">{tt(TEXT.demandForecast, lang)}</p>
               <p className="text-xs text-slate-400 mt-0.5">
-                主模型：<span className="text-slate-200 font-medium">{model}</span>
-                {modelRec && !recOverridden && modelRec.best_alpha != null && (
+                {lang === "zh" ? "主模型" : "Primary"}：
+                <span className="text-slate-200 font-medium">
+                  {primaryModel === "LGBM"
+                    ? lang === "zh"
+                      ? "LGBM（实验）"
+                      : "LGBM (experimental)"
+                    : primaryModel}
+                </span>
+                {modelRec && !recOverridden && primaryModel !== "LGBM" && modelRec.best_alpha != null && (
                   <span className="text-emerald-400/80 ml-1">
                     (α={modelRec.best_alpha}
                     {modelRec.best_beta != null ? ` β=${modelRec.best_beta}` : ""}
@@ -1265,6 +1413,9 @@ export default function Page() {
                   {visible.SES && chartApplicability.SES.usable && <Line type="monotone" dataKey="SES" name="SES" stroke={COLORS.SES} strokeWidth={1.5} dot={false} strokeDasharray="6 3" />}
                   {visible.HOLT && chartApplicability.HOLT.usable && <Line type="monotone" dataKey="HOLT" name="Holt" stroke={COLORS.HOLT} strokeWidth={1.5} dot={false} strokeDasharray="6 3" />}
                   {visible.HW && chartApplicability.HW.usable && <Line type="monotone" dataKey="HW" name="HW" stroke={COLORS.HW} strokeWidth={1.5} dot={false} strokeDasharray="6 3" />}
+                  {visible.LGBM && mlForecast && mlForecast.predictions.length > 0 && (
+                    <Line type="monotone" dataKey="LGBM" name="LGBM (ML)" stroke={COLORS.LGBM} strokeWidth={2} dot={false} strokeDasharray="4 2" />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
             )}
@@ -1313,7 +1464,7 @@ export default function Page() {
                   <tbody>
                     <tr className="divide-x divide-slate-800">
                       {modelBlendSnapshot.modelBlend.leadDemandByModel.map(({ name, leadDemand: ld }) => (
-                        <td key={name} className={`px-3 py-2 text-center ${name === model ? "bg-cyan-500/10" : ""}`}>
+                        <td key={name} className={`px-3 py-2 text-center ${name === primaryModel ? "bg-cyan-500/10" : ""}`}>
                           <p className="text-[10px] text-slate-500 mb-0.5" style={{ color: COLORS[name] ?? undefined }}>{name}</p>
                           <p className="font-mono font-semibold text-slate-100">{fmtInt(ld)}</p>
                         </td>
@@ -1348,8 +1499,128 @@ export default function Page() {
           </details>
         </div>
 
-        {/* AI copilot panel */}
-        <div className="rounded-2xl border border-indigo-500/30 bg-indigo-500/10 p-4 space-y-3">
+        {/* ── Right column wrapper — keeps the 2-col grid stable ── */}
+        <div className="space-y-3">
+
+          {/* Backtest Accuracy Card */}
+          {modelRec && (
+            <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4 space-y-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="rounded-full border border-emerald-400/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] font-bold text-emerald-300 uppercase tracking-wide">
+                  {lang === "zh" ? "回测精度" : "Backtest Accuracy"}
+                </span>
+                {modelRec.last_run_date && (
+                  <span className="text-[10px] text-emerald-400/60">
+                    {lang === "zh" ? "更新" : "Updated"}: {modelRec.last_run_date.slice(0, 10)}
+                  </span>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs">
+                <span className="text-emerald-200">
+                  {lang === "zh" ? "推荐模型" : "Best model"}:{" "}
+                  <span className="font-semibold">{modelRec.recommended_model}</span>
+                </span>
+                {modelRec.mape_at_recommendation != null && (
+                  <span className="text-emerald-200">MAPE <span className="font-semibold">{modelRec.mape_at_recommendation.toFixed(1)}%</span></span>
+                )}
+                {modelRec.mae_at_recommendation != null && (
+                  <span className="text-emerald-200">MAE <span className="font-semibold">{modelRec.mae_at_recommendation.toFixed(1)}</span></span>
+                )}
+                {modelRec.bias_at_recommendation != null && (
+                  <span className="text-emerald-200">
+                    {lang === "zh" ? "偏差" : "Bias"}{" "}
+                    <span className={`font-semibold ${modelRec.bias_at_recommendation > 0 ? "text-amber-300" : "text-sky-300"}`}>
+                      {modelRec.bias_at_recommendation > 0 ? "+" : ""}{modelRec.bias_at_recommendation.toFixed(1)}
+                    </span>
+                  </span>
+                )}
+              </div>
+              {(modelRec.sample_months != null || modelRec.runner_up_model) && (
+                <p className="text-[10px] text-emerald-400/60 leading-relaxed">
+                  {modelRec.sample_months != null && (lang === "zh" ? `基于 ${modelRec.sample_months} 个月样本` : `${modelRec.sample_months}-month sample`)}
+                  {modelRec.runner_up_model && (
+                    <span>
+                      {modelRec.sample_months != null ? " · " : ""}
+                      {lang === "zh" ? "备选" : "Runner-up"}: {modelRec.runner_up_model}
+                      {modelRec.runner_up_mape != null ? ` (MAPE ${modelRec.runner_up_mape.toFixed(1)}%)` : ""}
+                    </span>
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* ML Forecast Metrics Card */}
+          {(mlForecast || mlLoading) && (
+            <div className="rounded-2xl border border-purple-500/30 bg-purple-500/10 p-4 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="rounded-full border border-purple-400/40 bg-purple-500/20 px-2 py-0.5 text-[10px] font-bold text-purple-300 uppercase tracking-wide">
+                  {tt(TEXT.lgbmBadge, lang)}
+                </span>
+                {mlForecast?.trained_at && (
+                  <span className="text-[10px] text-purple-400/70">
+                    {tt(TEXT.lgbmTrainedAt, lang)}: {mlForecast.trained_at.slice(0, 10)}
+                  </span>
+                )}
+              </div>
+              {mlLoading && (
+                <p className="text-xs text-purple-300/70 animate-pulse">{tt(TEXT.lgbmLoading, lang)}</p>
+              )}
+              {!mlLoading && mlForecast && mlForecast.predictions.length === 0 && (
+                <p className="text-xs text-purple-300/70">{tt(TEXT.lgbmNoData, lang)}</p>
+              )}
+              {!mlLoading && mlForecast?.metrics && (() => {
+                const mape = mlForecast.metrics.mape != null ? mlForecast.metrics.mape * 100 : null;
+                const mae = mlForecast.metrics.mae ?? null;
+                // Reliability: warn if MAPE > 200% or MAE > 3x average velocity (heuristic)
+                const unreliable = (mape != null && mape > 200) || (mae != null && mae > 500);
+                return (
+                  <>
+                    {unreliable && (
+                      <div className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5">
+                        <span className="text-amber-400 mt-0.5">⚠</span>
+                        <p className="text-[10px] text-amber-300 leading-relaxed">
+                          {lang === "zh"
+                            ? "此 SKU 需求稀少或波动极大，ML 指标失真（MAPE 对零需求无效）。建议参考统计模型。"
+                            : "This SKU has sparse/volatile demand — ML metrics are distorted (MAPE is meaningless near-zero). Consider statistical models instead."}
+                        </p>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-3 text-xs">
+                      {mae != null && (
+                        <span className={unreliable ? "text-purple-300/50" : "text-purple-200"}>
+                          MAE <span className="font-semibold">{mae.toFixed(1)}</span>
+                        </span>
+                      )}
+                      {mlForecast.metrics.rmse != null && (
+                        <span className={unreliable ? "text-purple-300/50" : "text-purple-200"}>
+                          RMSE <span className="font-semibold">{mlForecast.metrics.rmse.toFixed(1)}</span>
+                        </span>
+                      )}
+                      {mape != null && (
+                        <span className={unreliable ? "text-purple-300/50 line-through" : "text-purple-200"}>
+                          MAPE <span className="font-semibold">{mape.toFixed(1)}%</span>
+                        </span>
+                      )}
+                      {!unreliable && (
+                        <span className="text-purple-400/60">· {lang === "zh" ? "回测误差（walk-forward）" : "walk-forward backtest error"}</span>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
+              {!mlLoading && mlForecast && mlForecast.predictions.length > 0 && (
+                <p className="text-[10px] text-purple-400/60">
+                  {lang === "zh"
+                    ? `预测未来 ${mlForecast.predictions.length} 个月 · 版本 ${mlForecast.model_version ?? "—"} · 图表中以紫色虚线展示`
+                    : `${mlForecast.predictions.length}-month forecast · version ${mlForecast.model_version ?? "—"} · shown as purple dashed line`}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* AI copilot panel */}
+          <div className="rounded-2xl border border-indigo-500/30 bg-indigo-500/10 p-4 space-y-3">
           <div className="flex items-center justify-between gap-2">
             <p className="text-sm font-semibold text-indigo-200">{tt(TEXT.aiRiskTitle, lang)}</p>
             <span className="rounded-full border border-indigo-400/30 bg-indigo-400/10 px-2 py-0.5 text-[10px] font-semibold text-indigo-300">
@@ -1412,6 +1683,9 @@ export default function Page() {
               {tt(TEXT.aiRiskAsk, lang)}
             </button>
           </form>
+        </div>
+
+        {/* end right column wrapper */}
         </div>
       </div>
     </div>

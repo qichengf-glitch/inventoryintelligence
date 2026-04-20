@@ -1,3 +1,4 @@
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -141,6 +142,13 @@ Rules:
 }
 
 export async function POST(req: NextRequest) {
+  const rl = checkRateLimit(getClientIp(req), { route: "obsolescence-insight", limit: 5, windowMs: 60_000 });
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "请求过于频繁，请稍后再试。/ Too many requests, please try again shortly." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+    );
+  }
   try {
     const body: InsightRequest = await req.json();
     const { lang = "zh" } = body;
@@ -153,13 +161,17 @@ export async function POST(req: NextRequest) {
     const model = process.env.OPENAI_INSIGHT_MODEL || "gpt-4o";
     const prompt = buildPrompt(body, lang);
 
-    const res = await fetch("https://api.openai.com/v1/responses", {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model, temperature: 0.4, input: prompt }),
+      body: JSON.stringify({
+        model,
+        temperature: 0.4,
+        messages: [{ role: "user", content: prompt }],
+      }),
     });
 
     if (!res.ok) {
@@ -168,14 +180,7 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await res.json();
-    const directText = typeof data?.output_text === "string" ? data.output_text.trim() : "";
-    const fromOutput = (Array.isArray(data?.output) ? data.output : [])
-      .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
-      .map((c: any) => (c?.type === "output_text" && typeof c?.text === "string" ? c.text : ""))
-      .join("\n")
-      .trim();
-
-    const report = directText || fromOutput;
+    const report = (data?.choices?.[0]?.message?.content ?? "").trim();
     if (!report) {
       return NextResponse.json({ error: "Empty response from AI" }, { status: 502 });
     }

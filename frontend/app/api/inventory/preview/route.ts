@@ -73,8 +73,8 @@ export async function GET(req: NextRequest) {
     const { schema, salesColumn, stockColumn } = getInventoryConfig();
     const { supabase, source } = await getSupabaseForPreview();
     const tableRef = schema
-      ? supabase.schema(schema).from("inventory_monthly")
-      : supabase.from("inventory_monthly");
+      ? supabase.schema(schema).from("inventory_batches")
+      : supabase.from("inventory_batches");
 
     let query = excludeAllZeroRows(
       tableRef

@@ -166,7 +166,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Bulk upsert results
+    // Bulk upsert results — track failures per chunk so we can report partial success
     const resultsRef = schema
       ? supabase.schema(schema).from("forecast_backtest_results")
       : supabase.from("forecast_backtest_results");
@@ -174,27 +174,44 @@ export async function POST(req: NextRequest) {
       ? supabase.schema(schema).from("forecast_model_recommendations")
       : supabase.from("forecast_model_recommendations");
 
-    // Insert in chunks of 500
+    let insertErrors = 0;
+    const insertErrorMessages: string[] = [];
+
+    // Insert backtest detail rows in chunks of 500
     for (let i = 0; i < backtestRows.length; i += 500) {
       const { error } = await resultsRef.insert(backtestRows.slice(i, i + 500));
-      if (error) console.error("[backtest/run] insert results error:", error.message);
+      if (error) {
+        insertErrors++;
+        insertErrorMessages.push(`results chunk ${i / 500 + 1}: ${error.message}`);
+        console.error("[backtest/run] insert results error:", error.message);
+      }
     }
+
+    // Upsert recommendation rows in chunks of 500
     for (let i = 0; i < recommendRows.length; i += 500) {
       const { error } = await recsRef.upsert(
         recommendRows.slice(i, i + 500) as any[],
         { onConflict: "sku" }
       );
-      if (error) console.error("[backtest/run] upsert recommendations error:", error.message);
+      if (error) {
+        insertErrors++;
+        insertErrorMessages.push(`recommendations chunk ${i / 500 + 1}: ${error.message}`);
+        console.error("[backtest/run] upsert recommendations error:", error.message);
+      }
     }
 
     const durationMs = Date.now() - startMs;
 
-    // Update run log as done
+    // Mark "done" only when every chunk succeeded; use "partial" if some chunks failed
+    const finalStatus = insertErrors === 0 ? "done" : "partial";
     await runLogRef.update({
-      status: "done",
+      status: finalStatus,
       skus_evaluated: skuList.length,
       duration_ms: durationMs,
       completed_at: new Date().toISOString(),
+      ...(insertErrors > 0 && {
+        error_message: `${insertErrors} chunk(s) failed: ${insertErrorMessages.join("; ")}`,
+      }),
     }).eq("id", runId);
 
     return NextResponse.json({
@@ -203,6 +220,8 @@ export async function POST(req: NextRequest) {
       skusEvaluated: skuList.length,
       modelsStored: backtestRows.length,
       durationMs,
+      status: finalStatus,
+      ...(insertErrors > 0 && { insertErrors, insertErrorMessages }),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Backtest failed";

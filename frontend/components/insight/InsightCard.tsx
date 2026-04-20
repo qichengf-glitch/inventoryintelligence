@@ -215,7 +215,7 @@ export default function InsightCard({ report, loading, error, lang, onRefresh, s
           dashboardSummaryContext: summaryContext,
           recentChat,
           lang: l,
-          model: "gpt-4.1-mini",
+          model: "gpt-4o",
         }),
       });
       const data = await res.json();
@@ -258,7 +258,7 @@ export default function InsightCard({ report, loading, error, lang, onRefresh, s
               <span className={`relative inline-flex h-2 w-2 rounded-full ${loading ? "bg-slate-600 animate-pulse" : report ? "bg-cyan-400" : "bg-slate-600"}`} />
             </span>
             <span className="text-xs font-semibold uppercase tracking-[0.14em] text-cyan-400/80">
-              AI Copilot
+              {l === "zh" ? "智能助手" : "Intelligence Helper"}
             </span>
           </div>
 

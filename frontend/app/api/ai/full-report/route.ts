@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { createSupabaseClient } from "@/lib/supabaseClient";
 import { getInventoryConfig } from "@/lib/inventoryConfig";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,7 +23,7 @@ async function collectReportData() {
   const ref = (t: string) => (schema ? supabase.schema(schema).from(t) : supabase.from(t));
 
   // Latest month from inventory_monthly
-  const monthRes = await ref("inventory_monthly")
+  const monthRes = await ref("inventory_batches")
     .select("month")
     .order("month", { ascending: false })
     .limit(1);
@@ -91,7 +92,7 @@ async function collectReportData() {
   const stockCover = totalSales > 0 ? (totalStock / totalSales).toFixed(1) : "N/A";
 
   // Slow movers count from inventory_summary (rough proxy: skus with 0 sales in latest 2 months)
-  const slowMoversRes = await ref("inventory_monthly")
+  const slowMoversRes = await ref("inventory_batches")
     .select("sku, month_sales, month_end_stock")
     .order("month", { ascending: false })
     .limit(10000);
@@ -178,6 +179,13 @@ Current month data:
 }
 
 export async function POST(req: NextRequest) {
+  const rl = checkRateLimit(getClientIp(req), { route: "full-report", limit: 3, windowMs: 60_000 });
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "请求过于频繁，请稍后再试。/ Too many requests, please try again shortly." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+    );
+  }
   try {
     const { lang = "zh" } = (await req.json()) as { lang?: "zh" | "en" };
 
@@ -201,7 +209,7 @@ export async function POST(req: NextRequest) {
     // Always use gpt-4.1 for the formal report (best quality)
     const model = "gpt-4.1";
 
-    const openaiRes = await fetch("https://api.openai.com/v1/responses", {
+    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -210,7 +218,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model,
         temperature: 0.4,
-        input: prompt,
+        messages: [{ role: "user", content: prompt }],
       }),
     });
 
@@ -225,14 +233,7 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await openaiRes.json();
-    const directText = typeof data?.output_text === "string" ? data.output_text.trim() : "";
-    const outputArray = Array.isArray(data?.output) ? data.output : [];
-    const fromOutput = outputArray
-      .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
-      .map((c: any) => (c?.type === "output_text" && typeof c?.text === "string" ? c.text : ""))
-      .join("\n")
-      .trim();
-    const report = directText || fromOutput;
+    const report = data?.choices?.[0]?.message?.content?.trim() ?? "";
 
     if (!report) {
       return NextResponse.json({ error: "Model returned no text" }, { status: 502 });

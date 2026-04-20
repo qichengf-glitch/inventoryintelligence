@@ -4,6 +4,7 @@ import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { buildSelect, getInventoryConfig } from "@/lib/inventoryConfig";
 import { scopeGuard } from "@/lib/copilot/scopeGuard";
 import { excludeAllZeroRows } from "@/lib/inventory/zeroFilter";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 type ForecastSummary = {
   sku?: string;
@@ -259,7 +260,7 @@ async function collectDashboardContext(scope: AssistantScope): Promise<Dashboard
     .sort((a, b) => b.sales - a.sales)
     .slice(0, 15);
 
-  const coreTables = Array.from(new Set(["datasets", "inventory_monthly", "inventory_summary", table]));
+  const coreTables = Array.from(new Set(["upload_records", "inventory_batches", "inventory_sku_monthly", table]));
   const tableStats = await Promise.all(coreTables.map((name) => collectTableStats(supabase, schema, name)));
 
   return {
@@ -444,6 +445,13 @@ function extractHtmlBlock(text: string): string | null {
 }
 
 export async function POST(req: NextRequest) {
+  const rl = checkRateLimit(getClientIp(req), { route: "forecast-advice", limit: 5, windowMs: 60_000 });
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "请求过于频繁，请稍后再试。/ Too many requests, please try again shortly." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+    );
+  }
   try {
     const {
       question,
@@ -472,8 +480,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "OPENAI_API_KEY is not set" }, { status: 500 });
     }
 
-    const allowList = new Set(["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"]);
-    const envModel = process.env.OPENAI_MODEL || "gpt-4o-mini";
+    const allowList = new Set(["gpt-4o-mini", "gpt-4o", "gpt-4.1"]);
+    const envModel = process.env.OPENAI_MODEL || "gpt-4o";
     const resolvedLang: "zh" | "en" = lang === "en" ? "en" : "zh";
     const wantChart = isChartRequest(question);
     // Use a more capable model automatically when the user requests a chart
@@ -509,7 +517,7 @@ export async function POST(req: NextRequest) {
       wantChart
     );
 
-    const res = await fetch("https://api.openai.com/v1/responses", {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -518,7 +526,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model,
         temperature: 0.3,
-        input,
+        messages: [{ role: "user", content: input }],
       }),
     });
 
@@ -535,14 +543,7 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await res.json();
-    const directText = typeof data?.output_text === "string" ? data.output_text.trim() : "";
-    const outputArray = Array.isArray(data?.output) ? data.output : [];
-    const fromOutput = outputArray
-      .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
-      .map((c: any) => (c?.type === "output_text" && typeof c?.text === "string" ? c.text : ""))
-      .join("\n")
-      .trim();
-    const rawAnswer = directText || fromOutput;
+    const rawAnswer = (data?.choices?.[0]?.message?.content ?? "").trim();
     if (!rawAnswer) {
       return NextResponse.json(
         { error: "Model returned no text content", rawType: typeof data, model },

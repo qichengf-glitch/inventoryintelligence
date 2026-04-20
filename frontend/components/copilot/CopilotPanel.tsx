@@ -55,7 +55,7 @@ const suggestedQuestions: LangString[] = [
 ];
 
 const TEXT = {
-  title: { zh: "AI COPILOT", en: "AI COPILOT" },
+  title: { zh: "智能助手", en: "INTELLIGENCE HELPER" },
   subtitle: {
     zh: "将问题、预测和库存上下文放在同一对话中。",
     en: "Keep questions, forecast, and inventory context in one thread.",

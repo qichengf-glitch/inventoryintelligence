@@ -107,8 +107,8 @@ async function getSupabaseForInventoryAll() {
 
 async function loadSafetyStockMap(supabase: any, schema?: string) {
   const tableRef = schema
-    ? supabase.schema(schema).from("safety_stock")
-    : supabase.from("safety_stock");
+    ? supabase.schema(schema).from("sku_safety_stock")
+    : supabase.from("sku_safety_stock");
 
   let data: Array<Record<string, unknown>> = [];
 
@@ -188,8 +188,8 @@ async function loadCategoryMap(supabase: any, schema?: string) {
 
 async function fetchLatestMonthFromInventoryMonthly(supabase: any, schema?: string) {
   const monthlyRef = schema
-    ? supabase.schema(schema).from("inventory_monthly")
-    : supabase.from("inventory_monthly");
+    ? supabase.schema(schema).from("inventory_batches")
+    : supabase.from("inventory_batches");
 
   const latestMonthRes = await monthlyRef
     .select("month")
@@ -216,8 +216,8 @@ async function fetchMonthlyRowsAll(
   schema: string | undefined
 ) {
   const monthlyRef = schema
-    ? supabase.schema(schema).from("inventory_monthly")
-    : supabase.from("inventory_monthly");
+    ? supabase.schema(schema).from("inventory_batches")
+    : supabase.from("inventory_batches");
 
   const { salesColumn, stockColumn } = getInventoryConfig();
   const rows: Array<Record<string, unknown>> = [];

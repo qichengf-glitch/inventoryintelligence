@@ -15,7 +15,7 @@ type TableInfo = {
 
 function normalizeTableList() {
   const fromEnv = (process.env.INVENTORY_TABLE || "").trim();
-  const fixed = ["datasets", "inventory_monthly", "inventory_summary"];
+  const fixed = ["upload_records", "inventory_batches", "inventory_sku_monthly"];
   return Array.from(new Set(fromEnv ? [...fixed, fromEnv] : fixed));
 }
 

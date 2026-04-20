@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
     //    Columns: sku, safety_stock_value  (alt: safety_stock)
     const skuKey = normalizeSku(sku);
 
-    const ssPreferred = await ref("safety_stock")
+    const ssPreferred = await ref("sku_safety_stock")
       .select("sku, safety_stock_value")
       .limit(20000);
 
@@ -64,7 +64,7 @@ export async function GET(req: NextRequest) {
       }
     } else {
       // safety_stock_value column might not exist — try wildcard
-      const ssFallback = await ref("safety_stock").select("*").limit(20000);
+      const ssFallback = await ref("sku_safety_stock").select("*").limit(20000);
       if (!ssFallback.error) {
         const rows = (ssFallback.data || []) as Array<Record<string, unknown>>;
         for (const row of rows) {

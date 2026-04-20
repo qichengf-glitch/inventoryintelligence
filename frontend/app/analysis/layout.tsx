@@ -8,6 +8,7 @@ const TABS = [
   { label: { zh: "需求预测", en: "Forecast" }, href: "/analysis/forecast" },
   { label: { zh: "精益策略", en: "Lean Strategy" }, href: "/analysis/lean-strategy" },
   { label: { zh: "呆滞预警", en: "Obsolescence" }, href: "/analysis/obsolescence" },
+  { label: { zh: "滞销预测", en: "Dead Stock" }, href: "/analysis/deadstock" },
 ];
 
 export default function AnalysisLayout({ children }: { children: React.ReactNode }) {
@@ -26,8 +27,8 @@ export default function AnalysisLayout({ children }: { children: React.ReactNode
         </h1>
         <p className="mt-1 text-sm text-slate-400">
           {lang === "zh"
-            ? "需求预测、ABC/XYZ 精益分类、呆滞库存风险三位一体分析。"
-            : "Demand forecasting, ABC/XYZ lean classification, and obsolescence risk — all in one place."}
+            ? "需求预测、精益分类与呆滞预警——库存侧分析工作台。（营销见侧栏「营销专栏」）"
+            : "Forecasting, lean classification, and obsolescence — inventory analytics. Marketing lives in the sidebar Marketing Hub."}
         </p>
 
         {/* Tab nav */}

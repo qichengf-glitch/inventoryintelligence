@@ -8,6 +8,7 @@ import type { AlertsResponse } from "@/lib/alerts/types";
 import { scopeGuard } from "@/lib/copilot/scopeGuard";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { createSupabaseClient } from "@/lib/supabaseClient";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,17 +64,20 @@ function buildAlertsPrompt(userQuestion: string, messages: ChatMessage[], alerts
 }
 
 function parseAnswerFromResponsePayload(data: any) {
-  const directText = typeof data?.output_text === "string" ? data.output_text.trim() : "";
-  if (directText) return directText;
-  const outputArray = Array.isArray(data?.output) ? data.output : [];
-  return outputArray
-    .flatMap((item: any) => (Array.isArray(item?.content) ? item.content : []))
-    .map((c: any) => (c?.type === "output_text" && typeof c?.text === "string" ? c.text : ""))
-    .join("\n")
-    .trim();
+  // Parse chat/completions response format
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content === "string") return content.trim();
+  return "";
 }
 
 export async function POST(req: NextRequest) {
+  const rl = checkRateLimit(getClientIp(req), { route: "copilot-alerts", limit: 20, windowMs: 60_000 });
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: "请求过于频繁，请稍后再试。/ Too many requests, please try again shortly." },
+      { status: 429, headers: { "Retry-After": String(Math.ceil((rl.resetAt - Date.now()) / 1000)) } }
+    );
+  }
   try {
     const body = (await req.json()) as { messages?: ChatMessage[] };
     const messages = Array.isArray(body?.messages) ? body.messages : [];
@@ -105,7 +109,7 @@ export async function POST(req: NextRequest) {
     const allowList = new Set(["gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1"]);
     const model = allowList.has(requestedModel) ? requestedModel : "gpt-4o-mini";
 
-    const openaiRes = await fetch("https://api.openai.com/v1/responses", {
+    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -114,7 +118,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model,
         temperature: 0.2,
-        input: prompt,
+        messages: [{ role: "user", content: prompt }],
       }),
     });
 

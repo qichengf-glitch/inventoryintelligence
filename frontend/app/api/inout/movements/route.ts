@@ -39,10 +39,15 @@ export async function GET(req: NextRequest) {
       throw error;
     }
 
-    // Summary stats for the filtered results
-    const statsQuery = supabase
+    // Summary stats for the filtered results — apply same filters as main query
+    let statsQuery = supabase
       .from("stock_movements")
       .select("movement_type, qty");
+
+    if (sku) statsQuery = statsQuery.ilike("sku", `%${sku}%`);
+    if (type && VALID_TYPES.includes(type as MovementType)) statsQuery = statsQuery.eq("movement_type", type);
+    if (from) statsQuery = statsQuery.gte("movement_date", from);
+    if (to) statsQuery = statsQuery.lte("movement_date", to);
 
     const { data: statsData } = await statsQuery;
     const stats = { total_in: 0, total_out: 0, total_adj: 0, total_movements: count ?? 0 };
