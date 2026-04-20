@@ -103,10 +103,10 @@ async function deleteByFileName(
 
   if (datasetIds.length === 0) return;
 
-  // inventory_summary uses ON DELETE SET NULL; remove old summary rows explicitly for exact overwrite semantics.
+  // inventory_sku_monthly is an optional pre-aggregated table — skip gracefully if it doesn't exist.
   const summaryDelete = await getTable("inventory_sku_monthly").delete().in("dataset_id", datasetIds);
-  if (summaryDelete.error) {
-    throw new Error(`Failed to delete previous inventory_summary rows by file name: ${summaryDelete.error.message}`);
+  if (summaryDelete.error && summaryDelete.error.code !== "42P01" && summaryDelete.error.code !== "PGRST205") {
+    console.warn("[api/inventory/upload] inventory_sku_monthly delete warning:", summaryDelete.error.message);
   }
 
   const monthlyDelete = await getTable("inventory_batches").delete().in("dataset_id", datasetIds);
@@ -269,18 +269,19 @@ export async function POST(req: NextRequest) {
         }
       }
 
+      // inventory_sku_monthly is an optional pre-aggregated table — skip gracefully if it doesn't exist.
       const deleteSummaryRes = await getTable("inventory_sku_monthly").delete().eq("month", monthDate);
-      if (deleteSummaryRes.error) {
-        throw new Error(`Failed to delete previous inventory_summary rows: ${deleteSummaryRes.error.message}`);
+      if (deleteSummaryRes.error && deleteSummaryRes.error.code !== "42P01" && deleteSummaryRes.error.code !== "PGRST205") {
+        console.warn("[api/inventory/upload] inventory_sku_monthly delete warning:", deleteSummaryRes.error.message);
       }
 
       const summaryRows = Array.from(summaryMap.values());
-      if (summaryRows.length > 0) {
+      if (summaryRows.length > 0 && !deleteSummaryRes.error) {
         const upsertSummaryRes = await getTable("inventory_sku_monthly").upsert(summaryRows, {
           onConflict: "month,sku",
         });
-        if (upsertSummaryRes.error) {
-          throw new Error(`Failed to upsert inventory_summary: ${upsertSummaryRes.error.message}`);
+        if (upsertSummaryRes.error && upsertSummaryRes.error.code !== "42P01" && upsertSummaryRes.error.code !== "PGRST205") {
+          console.warn("[api/inventory/upload] inventory_sku_monthly upsert warning:", upsertSummaryRes.error.message);
         }
       }
 

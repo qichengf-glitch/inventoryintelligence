@@ -387,7 +387,7 @@ export async function GET(_req: NextRequest) {
       monthlyRowCount: monthlyRows.length,
       safetyMappedSkuCount: safetyBySku.size,
       categoryMappedSkuCount: categoryBySku.size,
-      dataSource: "inventory_monthly(all-month sku+batch)",
+      dataSource: "inventory_batches(all-month sku+batch)",
     });
 
     return NextResponse.json({

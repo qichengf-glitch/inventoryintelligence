@@ -206,18 +206,25 @@ export async function POST(request: Request) {
       }
     }
 
+    // inventory_sku_monthly is an optional pre-aggregated table — skip gracefully if it doesn't exist.
     const deleteMonthSummary = await supabase
       .from("inventory_sku_monthly")
       .delete()
       .eq("month", monthDate);
-    await assertNoSupabaseError(deleteMonthSummary, "Failed to delete previous inventory_summary rows");
+    const skuMonthlyMissing =
+      deleteMonthSummary.error?.code === "42P01" || deleteMonthSummary.error?.code === "PGRST205";
+    if (deleteMonthSummary.error && !skuMonthlyMissing) {
+      console.warn("[api/commit-upload] inventory_sku_monthly delete warning:", deleteMonthSummary.error.message);
+    }
 
     const summaryRows = Array.from(summaryMap.values());
-    if (summaryRows.length > 0) {
+    if (summaryRows.length > 0 && !skuMonthlyMissing) {
       const upsertSummary = await supabase.from("inventory_sku_monthly").upsert(summaryRows, {
         onConflict: "month,sku",
       });
-      await assertNoSupabaseError(upsertSummary, "Failed to upsert inventory_summary");
+      if (upsertSummary.error && upsertSummary.error.code !== "42P01" && upsertSummary.error.code !== "PGRST205") {
+        console.warn("[api/commit-upload] inventory_sku_monthly upsert warning:", upsertSummary.error.message);
+      }
     }
 
     // Best-effort dashboard monthly aggregate for Home KPI/cards.

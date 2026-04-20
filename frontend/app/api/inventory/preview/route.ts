@@ -119,7 +119,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       source,
-      table: `${schema || "public"}.inventory_monthly`,
+      table: `${schema || "public"}.inventory_batches`,
       sku,
       monthFilter: parsedMonth,
       batchFilter: batchFilter || null,

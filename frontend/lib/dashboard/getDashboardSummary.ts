@@ -616,7 +616,7 @@ async function readStrictLatestMonthKpiTotals(
   if (latestMonthRes.error) {
     if (latestMonthRes.error.code !== "42P01" && latestMonthRes.error.code !== "PGRST205") {
       console.warn(
-        "[dashboard/summary] failed to read latest month from inventory_monthly:",
+        "[dashboard/summary] failed to read latest month from inventory_batches:",
         latestMonthRes.error.message
       );
     }
@@ -639,7 +639,7 @@ async function readStrictLatestMonthKpiTotals(
   const latestTotals = await readMonthTotals(latestMonth, monthFilterValue);
   if (latestTotals.error) {
     console.warn(
-      "[dashboard/summary] failed to read latest-month rows from inventory_monthly:",
+      "[dashboard/summary] failed to read latest-month rows from inventory_batches:",
       latestTotals.error
     );
     return {
@@ -667,7 +667,7 @@ async function readStrictLatestMonthKpiTotals(
 
   if (previousMonthRes.error) {
     console.warn(
-      "[dashboard/summary] failed to read previous month from inventory_monthly:",
+      "[dashboard/summary] failed to read previous month from inventory_batches:",
       previousMonthRes.error.message
     );
   } else {
@@ -679,7 +679,7 @@ async function readStrictLatestMonthKpiTotals(
       const previousTotals = await readMonthTotals(previousMonthTarget.month, previousMonthTarget.filterValue);
       if (previousTotals.error) {
         console.warn(
-          "[dashboard/summary] failed to read previous-month rows from inventory_monthly:",
+          "[dashboard/summary] failed to read previous-month rows from inventory_batches:",
           previousTotals.error
         );
       } else {
@@ -898,15 +898,6 @@ function buildSourceCandidates(): DataSourceCandidate[] {
   const resolvedConfigured = resolveSchemaAndTable(schema, table);
 
   const candidates: DataSourceCandidate[] = [
-    {
-      label: "inventory_sku_monthly",
-      schema,
-      table: "inventory_sku_monthly",
-      skuColumn: "sku",
-      timeColumn: "month",
-      stockColumn: "total_month_end_stock",
-      salesColumn: "total_month_sales",
-    },
     {
       label: "inventory_batches",
       schema,
