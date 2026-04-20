@@ -79,11 +79,12 @@ export async function GET(req: NextRequest) {
 
     // Deduplicate: keep one record per SKU, preferring a non-null category
     const skuMap = new Map<string, { category: string | null }>();
-    for (const row of invRows ?? []) {
+    for (const row of ((invRows ?? []) as unknown as Array<Record<string, unknown>>)) {
       const sku = String(row[config.skuColumn] ?? "").trim();
       if (!sku) continue;
-      const cat = typeof row.category === "string" && row.category.trim()
-        ? row.category.trim()
+      const rawCategory = row.category;
+      const cat = typeof rawCategory === "string" && rawCategory.trim()
+        ? rawCategory.trim()
         : null;
       if (!skuMap.has(sku)) {
         skuMap.set(sku, { category: cat });

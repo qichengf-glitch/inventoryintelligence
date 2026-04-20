@@ -20,6 +20,7 @@ import { NextResponse } from "next/server";
 import { computeAlertsSnapshot, resolveInventoryAlertConfig } from "@/lib/alerts/computeAlerts";
 import { createSupabaseAdminClient } from "@/lib/supabaseAdmin";
 import { createSupabaseClient } from "@/lib/supabaseClient";
+import type { AlertItem } from "@/lib/alerts/types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -70,6 +71,10 @@ ${data}`;
 ${data}`;
 }
 
+function flattenAlerts(items: { oos: AlertItem[]; low: AlertItem[]; high: AlertItem[] }) {
+  return [...items.oos, ...items.low, ...items.high];
+}
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -80,6 +85,7 @@ export async function GET(req: Request) {
 
     const supabase = getSupabase();
     const alerts = await computeAlertsSnapshot(supabase, { month: "latest", config: ALERT_CONFIG });
+    const topBySeverity = alerts.top10;
 
     // Build alert groups for UI
     const alertGroups = [
@@ -88,7 +94,7 @@ export async function GET(req: Request) {
         label: lang === "zh" ? "缺货 (OOS)" : "Out of Stock (OOS)",
         color: "red",
         count: alerts.counts.oos,
-        items: alerts.top10.filter((a: any) => a.status === "OOS").slice(0, 10).map((a: any) => ({
+        items: topBySeverity.oos.slice(0, 10).map((a) => ({
           sku: a.sku,
           stock: a.on_hand,
           action: a.suggested_action,
@@ -100,7 +106,7 @@ export async function GET(req: Request) {
         label: lang === "zh" ? "低库存 (LOW)" : "Low Stock (LOW)",
         color: "amber",
         count: alerts.counts.low,
-        items: alerts.top10.filter((a: any) => a.status === "LOW").slice(0, 10).map((a: any) => ({
+        items: topBySeverity.low.slice(0, 10).map((a) => ({
           sku: a.sku,
           stock: a.on_hand,
           action: a.suggested_action,
@@ -112,7 +118,7 @@ export async function GET(req: Request) {
         label: lang === "zh" ? "高库存 (HIGH)" : "High Stock (HIGH)",
         color: "violet",
         count: alerts.counts.high,
-        items: alerts.top10.filter((a: any) => a.status === "HIGH").slice(0, 10).map((a: any) => ({
+        items: topBySeverity.high.slice(0, 10).map((a) => ({
           sku: a.sku,
           stock: a.on_hand,
           action: a.suggested_action,
@@ -123,7 +129,7 @@ export async function GET(req: Request) {
     // Build compact context for AI
     const aiContext = {
       counts: alerts.counts,
-      top_urgent: alerts.top10.slice(0, 15).map((a: any) => ({
+      top_urgent: flattenAlerts(alerts.top10).slice(0, 15).map((a) => ({
         sku: a.sku,
         status: a.status,
         on_hand: a.on_hand,

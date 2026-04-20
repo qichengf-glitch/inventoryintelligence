@@ -291,23 +291,33 @@ export async function GET(req: Request) {
     });
 
     counts = {
-      oos: snapshot.groups.find((g) => g.type === "OOS")?.items.length ?? 0,
-      low: snapshot.groups.find((g) => g.type === "LOW")?.items.length ?? 0,
-      high: snapshot.groups.find((g) => g.type === "HIGH")?.items.length ?? 0,
-      total: snapshot.totalAlerts ?? 0,
+      oos: snapshot.counts.oos ?? 0,
+      low: snapshot.counts.low ?? 0,
+      high: snapshot.counts.high ?? 0,
+      total: (snapshot.counts.oos ?? 0) + (snapshot.counts.low ?? 0) + (snapshot.counts.high ?? 0),
     };
 
     // Compact context for AI (top 15 alerts only to stay within token limits)
     alertsData = {
       date: today(),
       counts,
-      top_alerts: snapshot.groups.flatMap((g) =>
-        (g.items ?? []).slice(0, 5).map((item) => ({
-          type: g.type,
+      top_alerts: [
+        ...(snapshot.top10.oos ?? []).slice(0, 5).map((item) => ({
+          type: "OOS",
           sku: item.sku,
-          stock: item.current_stock,
-        }))
-      ),
+          stock: item.on_hand,
+        })),
+        ...(snapshot.top10.low ?? []).slice(0, 5).map((item) => ({
+          type: "LOW",
+          sku: item.sku,
+          stock: item.on_hand,
+        })),
+        ...(snapshot.top10.high ?? []).slice(0, 5).map((item) => ({
+          type: "HIGH",
+          sku: item.sku,
+          stock: item.on_hand,
+        })),
+      ],
     };
   } catch (err) {
     console.error("[daily-email] Failed to load alerts:", err);

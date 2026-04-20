@@ -82,7 +82,7 @@ function EditCell({
   field: "category" | "cost" | "price";
   value: string | number | null;
   editState: EditState | null;
-  onStartEdit: (sku: string, field: EditCell["field"], current: string) => void;
+  onStartEdit: (sku: string, field: EditState["field"], current: string) => void;
   onChangeEdit: (v: string) => void;
   onSave: () => void;
   onCancel: () => void;
