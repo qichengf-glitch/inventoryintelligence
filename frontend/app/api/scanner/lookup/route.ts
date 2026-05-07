@@ -59,7 +59,8 @@ export async function GET(req: NextRequest) {
         .limit(1);
 
       if (rows && rows.length > 0) {
-        resolvedSku = String((rows[0] as Record<string, unknown>)[skuColumn] ?? "").trim();
+        const row0 = rows[0] as unknown as Record<string, unknown>;
+        resolvedSku = String(row0[skuColumn] ?? "").trim();
       }
     } catch {
       // inventory table not available
@@ -86,7 +87,7 @@ export async function GET(req: NextRequest) {
       .limit(1);
 
     if (stockRows && stockRows.length > 0) {
-      const row = stockRows[0] as Record<string, unknown>;
+      const row = stockRows[0] as unknown as Record<string, unknown>;
       const rawStock = row[stockColumn];
       currentStock = rawStock != null ? Number(rawStock) : null;
       if (!productLabel) {
