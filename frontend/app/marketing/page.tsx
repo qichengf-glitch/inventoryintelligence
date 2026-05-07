@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { useLanguage } from "@/components/LanguageProvider";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
@@ -71,10 +71,29 @@ type CampaignSuggestion = {
 
 /* ─── Constants ──────────────────────────────────────────── */
 const CARD = "rounded-2xl border border-slate-800 bg-slate-900/70";
-const TABS_INNER = ["leaderboard", "promo", "category", "ai"] as const;
+const TABS_INNER = ["leaderboard", "promo", "category", "ai", "news"] as const;
 type InnerTab = (typeof TABS_INNER)[number];
+
+// ─── News types ───────────────────────────────────────────────────────────────
+type NewsArticle = {
+  title: string;
+  source: string;
+  pubDate: string;
+  link: string;
+};
+
+type NewsData = {
+  articles: NewsArticle[];
+  ai_strategy: string;
+  news_fetch_error: string | null;
+  lang: "zh" | "en";
+  fetched_at: string;
+};
+
+const NEWS_REFRESH_MS = 30 * 60 * 1000; // 30 minutes
 type InnerTabLabelEntry = { zh: string; en: string };
 type InnerTabLabelsMap = { [K in InnerTab]: InnerTabLabelEntry };
+
 
 const STOCK_META = {
   0: { label: { zh: "库存不足", en: "Understocked" }, color: "#f87171", bg: "bg-red-500/20 text-red-300 border-red-500/30" },
@@ -118,6 +137,14 @@ export default function MarketingPage() {
   const [aiModelUsed, setAiModelUsed] = useState<string>("");
   const [aiGeneratedAt, setAiGeneratedAt] = useState<string>("");
   const [aiFocus, setAiFocus] = useState<string>("");
+
+  // Industry News state
+  const [newsData, setNewsData] = useState<NewsData | null>(null);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsError, setNewsError] = useState<string | null>(null);
+  const [nextRefreshAt, setNextRefreshAt] = useState<number>(0);
+  const [countdown, setCountdown] = useState<string>("");
+  const newsTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   /* Fetch data */
   useEffect(() => {
@@ -213,12 +240,80 @@ export default function MarketingPage() {
       .finally(() => setAiLoading(false));
   };
 
+  /* News fetch */
+  const fetchNews = (skuData: typeof data) => {
+    if (!skuData) return;
+    setNewsLoading(true);
+    setNewsError(null);
+    fetch("/api/marketing/industry-news", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lang,
+        skus: skuData.skus.slice(0, 60),
+        category_stats: skuData.category_stats,
+      }),
+    })
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
+        return d as NewsData;
+      })
+      .then((d) => {
+        setNewsData(d);
+        setNextRefreshAt(Date.now() + NEWS_REFRESH_MS);
+      })
+      .catch((e) => setNewsError(e instanceof Error ? e.message : "News fetch failed"))
+      .finally(() => setNewsLoading(false));
+  };
+
+  /* Auto-fetch news when tab opens; auto-refresh every 30 min */
+  useEffect(() => {
+    if (innerTab !== "news") return;
+    if (!data) return;
+
+    // Initial fetch (or re-fetch if stale)
+    if (!newsData || Date.now() > nextRefreshAt) {
+      fetchNews(data);
+    }
+
+    // Refresh interval
+    const interval = setInterval(() => {
+      if (!newsLoading) fetchNews(data);
+    }, NEWS_REFRESH_MS);
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [innerTab, data]);
+
+  /* Countdown ticker */
+  useEffect(() => {
+    if (newsTimerRef.current) clearInterval(newsTimerRef.current);
+    if (nextRefreshAt === 0) return;
+
+    newsTimerRef.current = setInterval(() => {
+      const remaining = nextRefreshAt - Date.now();
+      if (remaining <= 0) {
+        setCountdown("");
+        return;
+      }
+      const mins = Math.floor(remaining / 60_000);
+      const secs = Math.floor((remaining % 60_000) / 1000);
+      setCountdown(`${mins}:${secs.toString().padStart(2, "0")}`);
+    }, 1000);
+
+    return () => {
+      if (newsTimerRef.current) clearInterval(newsTimerRef.current);
+    };
+  }, [nextRefreshAt]);
+
   /* ─── UI ──────────────────────────────────────────────── */
   const INNER_TAB_LABELS: InnerTabLabelsMap = {
     leaderboard: { zh: "产品排行榜", en: "Leaderboard" },
     promo: { zh: "推广机会", en: "Promo Opportunities" },
     category: { zh: "品类分析", en: "Category Analysis" },
     ai: { zh: "AI 活动建议", en: "AI Campaigns" },
+    news: { zh: "行业资讯", en: "Industry News" },
   };
 
   if (loading) {
@@ -291,6 +386,11 @@ export default function MarketingPage() {
               )}
               {t === "ai" && (
                 <span className="ml-1 text-[10px]">✨</span>
+              )}
+              {t === "news" && (
+                <span className="ml-1.5 rounded-full bg-emerald-500/25 px-1.5 py-0.5 text-[10px] font-bold text-emerald-400">
+                  LIVE
+                </span>
               )}
             </button>
           ))}
@@ -653,6 +753,148 @@ export default function MarketingPage() {
         </div>
       )}
 
+      {/* ── Tab: Industry News ───────────────────────────── */}
+      {innerTab === "news" && (
+        <div className={`${CARD} p-5 space-y-5`}>
+
+          {/* Header + controls */}
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-semibold text-emerald-300">
+                {isZh ? "行业实时资讯 · AI 营销洞察" : "Live Industry News · AI Marketing Insights"}
+              </p>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {isZh
+                  ? "自动抓取最新行业资讯，结合当前库存状态，由 AI 生成针对性营销策略。每 30 分钟自动刷新。"
+                  : "Auto-fetches the latest industry headlines and combines them with your live inventory to generate timely marketing strategies. Refreshes every 30 minutes."}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {countdown && (
+                <span className="text-[11px] text-slate-500">
+                  {isZh ? `${countdown} 后刷新` : `Refresh in ${countdown}`}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => { if (data) fetchNews(data); }}
+                disabled={newsLoading}
+                className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 hover:bg-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {newsLoading
+                  ? (isZh ? "获取中…" : "Fetching…")
+                  : (isZh ? "🔄 立即刷新" : "🔄 Refresh")}
+              </button>
+            </div>
+          </div>
+
+          {/* Last fetched timestamp */}
+          {newsData && !newsLoading && (
+            <p className="text-[11px] text-slate-600">
+              {isZh ? "数据更新于：" : "Last updated: "}
+              {new Date(newsData.fetched_at).toLocaleString(isZh ? "zh-CN" : "en-US")}
+              {newsData.news_fetch_error && (
+                <span className="ml-2 text-amber-500/80">
+                  {isZh ? "（新闻获取受限，已使用 AI 行业洞察替代）" : "(News fetch limited — AI market knowledge used)"}
+                </span>
+              )}
+            </p>
+          )}
+
+          {/* Error */}
+          {newsError && !newsLoading && (
+            <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-300">
+              {isZh ? `获取失败：${newsError}` : `Error: ${newsError}`}
+              <button
+                type="button"
+                onClick={() => { if (data) fetchNews(data); }}
+                className="ml-3 underline hover:no-underline"
+              >
+                {isZh ? "重试" : "Retry"}
+              </button>
+            </div>
+          )}
+
+          {/* Loading skeleton */}
+          {newsLoading && (
+            <div className="space-y-4 animate-pulse">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {[1,2,3,4].map((i) => (
+                  <div key={i} className="rounded-xl border border-slate-700 bg-slate-800/50 p-4 space-y-2">
+                    <div className="h-3 w-16 rounded bg-slate-700" />
+                    <div className="h-4 w-full rounded bg-slate-700" />
+                    <div className="h-4 w-4/5 rounded bg-slate-700" />
+                  </div>
+                ))}
+              </div>
+              <div className="rounded-xl border border-slate-700 bg-slate-800/50 p-5 space-y-3">
+                <div className="h-4 w-36 rounded bg-slate-700" />
+                {[1,2,3].map((i) => (
+                  <div key={i} className="space-y-1.5">
+                    <div className="h-4 w-48 rounded bg-slate-700" />
+                    <div className="h-3 w-full rounded bg-slate-600" />
+                    <div className="h-3 w-3/4 rounded bg-slate-600" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Content */}
+          {!newsLoading && newsData && (
+            <>
+              {/* News articles grid */}
+              {newsData.articles.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-[0.1em] mb-3">
+                    {isZh ? "🗞️ 最新行业动态" : "🗞️ Latest Headlines"}
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {newsData.articles.map((article, idx) => (
+                      <NewsCard key={idx} article={article} isZh={isZh} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* AI Strategy */}
+              {newsData.ai_strategy && (
+                <div className="rounded-2xl border border-emerald-500/20 bg-[linear-gradient(135deg,rgba(6,78,59,0.3),rgba(15,23,42,0.9))] p-5">
+                  <div className="flex items-center gap-2 mb-4">
+                    <span className="text-lg">🤖</span>
+                    <div>
+                      <p className="text-sm font-semibold text-emerald-300">
+                        {isZh ? "AI 营销策略建议" : "AI Marketing Strategy"}
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        {isZh
+                          ? "基于今日新闻 + 当前库存 · GPT-4.1 生成"
+                          : "Based on today's news + live inventory · GPT-4.1"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-sm leading-relaxed">
+                    <RenderMarkdown text={newsData.ai_strategy} />
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Empty state — not yet loaded */}
+          {!newsLoading && !newsData && !newsError && (
+            <div className="py-16 text-center space-y-2">
+              <p className="text-4xl">📡</p>
+              <p className="text-sm text-slate-400">
+                {isZh
+                  ? "正在连接行业资讯源…"
+                  : "Connecting to industry news feeds…"}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Tab: Category Analysis ────────────────────────── */}
       {innerTab === "category" && (
         <div className={`${CARD} p-4 space-y-4`}>
@@ -842,6 +1084,91 @@ function CampaignCard({ campaign: c, isZh }: { campaign: CampaignSuggestion; isZ
       )}
     </div>
   );
+}
+
+/* ─── Markdown renderer (shared) ────────────────────────── */
+function BoldText({ text }: { text: string }) {
+  const parts = text.split(/\*\*(.*?)\*\*/g);
+  return (
+    <>
+      {parts.map((p, i) =>
+        i % 2 === 1
+          ? <strong key={i} className="font-semibold text-slate-100">{p}</strong>
+          : <span key={i}>{p}</span>
+      )}
+    </>
+  );
+}
+
+function RenderMarkdown({ text }: { text: string }) {
+  const lines = text.split("\n");
+  return (
+    <div className="space-y-1">
+      {lines.map((line, i) => {
+        if (line.startsWith("## "))
+          return <h2 key={i} className="mt-5 mb-2 text-base font-bold text-emerald-300">{line.slice(3)}</h2>;
+        if (line.startsWith("### "))
+          return <h3 key={i} className="mt-3 mb-1 text-sm font-semibold text-emerald-200">{line.slice(4)}</h3>;
+        if (line.startsWith("- ") || line.startsWith("* "))
+          return <li key={i} className="ml-4 text-sm leading-7 text-slate-200 list-disc"><BoldText text={line.slice(2)} /></li>;
+        if (line.trim() === "")
+          return <div key={i} className="h-2" />;
+        return <p key={i} className="text-sm leading-7 text-slate-200"><BoldText text={line} /></p>;
+      })}
+    </div>
+  );
+}
+
+/* ─── News Card ─────────────────────────────────────────── */
+function NewsCard({ article, isZh }: { article: { title: string; source: string; pubDate: string; link: string }; isZh: boolean }) {
+  // Format pubDate — could be RFC 2822 or ISO
+  const formattedDate = (() => {
+    if (!article.pubDate) return "";
+    try {
+      const d = new Date(article.pubDate);
+      if (isNaN(d.getTime())) return article.pubDate;
+      const now = Date.now();
+      const diffMs = now - d.getTime();
+      const diffHrs = Math.floor(diffMs / 3_600_000);
+      const diffMins = Math.floor(diffMs / 60_000);
+      if (diffMins < 60) return isZh ? `${diffMins} 分钟前` : `${diffMins}m ago`;
+      if (diffHrs < 24) return isZh ? `${diffHrs} 小时前` : `${diffHrs}h ago`;
+      return d.toLocaleDateString(isZh ? "zh-CN" : "en-US", { month: "short", day: "numeric" });
+    } catch { return article.pubDate; }
+  })();
+
+  const content = (
+    <div className="rounded-xl border border-slate-700 bg-slate-800/40 p-3.5 space-y-2 hover:border-emerald-500/30 hover:bg-slate-800/70 transition-colors h-full">
+      <div className="flex items-start justify-between gap-2">
+        {article.source && (
+          <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-400 flex-shrink-0">
+            {article.source}
+          </span>
+        )}
+        {formattedDate && (
+          <span className="text-[10px] text-slate-500 flex-shrink-0 ml-auto">{formattedDate}</span>
+        )}
+      </div>
+      <p className="text-xs font-medium text-slate-200 leading-5 line-clamp-3">
+        {article.title}
+      </p>
+      {article.link && (
+        <p className="text-[10px] text-emerald-500/70">
+          {isZh ? "点击查看原文 →" : "Read full article →"}
+        </p>
+      )}
+    </div>
+  );
+
+  if (article.link) {
+    return (
+      <a href={article.link} target="_blank" rel="noopener noreferrer" className="block">
+        {content}
+      </a>
+    );
+  }
+
+  return <div>{content}</div>;
 }
 
 /* ─── KPI Card ───────────────────────────────────────────── */

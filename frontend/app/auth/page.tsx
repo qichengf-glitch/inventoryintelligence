@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { useLanguage } from "@/components/LanguageProvider";
 
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
@@ -55,6 +56,7 @@ function getEmailRedirectTo() {
 
 export default function AuthPage() {
   const router = useRouter();
+  const { lang, toggleLang } = useLanguage();
   const [supabase, setSupabase] = useState<SupabaseClient | null>(null);
 
   const [mode, setMode] = useState<AuthMode>("login");
@@ -258,119 +260,100 @@ export default function AuthPage() {
     }
   };
 
+  const T = {
+    access:      { zh: "INVENTORY ACCESS",              en: "INVENTORY ACCESS" },
+    heading:     { zh: "登录 / 注册",                    en: "Sign In / Sign Up" },
+    subtext:     { zh: "使用邮箱账号访问 Inventory Intelligence。", en: "Access Inventory Intelligence with your email." },
+    login:       { zh: "登录",      en: "Sign In" },
+    signup:      { zh: "注册",      en: "Sign Up" },
+    name:        { zh: "姓名（可选）", en: "Name (optional)" },
+    namePh:      { zh: "例如：张三", en: "e.g. Alex" },
+    password:    { zh: "密码",      en: "Password" },
+    submit:      { zh: mode === "login" ? "登录" : "注册", en: mode === "login" ? "Sign In" : "Sign Up" },
+    pending:     { zh: "处理中…",   en: "Processing…" },
+    resend:      { zh: "重新发送验证邮件", en: "Resend verification email" },
+    resending:   { zh: "重发中…",   en: "Resending…" },
+  };
+  const t = (k: keyof typeof T) => T[k][lang];
+
   return (
     <section className="mx-auto flex min-h-screen w-full max-w-lg items-center px-4 py-10">
       <div className="w-full rounded-2xl border border-slate-800 bg-slate-900/70 p-6 shadow-[0_20px_60px_rgba(2,6,23,0.45)]">
-        <p className="text-xs uppercase tracking-[0.18em] text-slate-400">INVENTORY ACCESS</p>
-        <h1 className="mt-2 text-2xl font-semibold text-slate-100">登录 / 注册</h1>
-        <p className="mt-2 text-sm text-slate-400">使用邮箱账号访问 Inventory Intelligence。</p>
 
-        <div className="mt-6 grid grid-cols-2 rounded-xl border border-slate-800 bg-slate-950 p-1">
+        {/* Header row with language toggle */}
+        <div className="flex items-start justify-between">
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-400">{t("access")}</p>
+          {/* Compact language pill */}
           <button
             type="button"
-            onClick={() => {
-              setMode("login");
-              setErrorMessage("");
-              setSuccessMessage("");
-              setProfileWarning("");
-            }}
-            className={`rounded-lg px-3 py-2 text-sm transition ${
-              mode === "login"
-                ? "bg-cyan-500/20 text-cyan-100"
-                : "text-slate-300 hover:text-slate-100"
-            }`}
+            onClick={toggleLang}
+            className="flex items-center gap-1 rounded-full border border-slate-700 bg-slate-950 px-2.5 py-1 text-xs text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
           >
-            登录
+            <span className={lang === "zh" ? "text-slate-100" : "text-slate-500"}>中</span>
+            <span className="text-slate-700">|</span>
+            <span className={lang === "en" ? "text-slate-100" : "text-slate-500"}>EN</span>
           </button>
-          <button
-            type="button"
-            onClick={() => {
-              setMode("signup");
-              setErrorMessage("");
-              setSuccessMessage("");
-              setProfileWarning("");
-            }}
-            className={`rounded-lg px-3 py-2 text-sm transition ${
-              mode === "signup"
-                ? "bg-cyan-500/20 text-cyan-100"
-                : "text-slate-300 hover:text-slate-100"
-            }`}
-          >
-            注册
-          </button>
+        </div>
+
+        <h1 className="mt-2 text-2xl font-semibold text-slate-100">{t("heading")}</h1>
+        <p className="mt-1 text-sm text-slate-400">{t("subtext")}</p>
+
+        {/* Login / Signup tabs */}
+        <div className="mt-5 grid grid-cols-2 rounded-xl border border-slate-800 bg-slate-950 p-1">
+          {(["login", "signup"] as const).map(m => (
+            <button key={m} type="button"
+              onClick={() => { setMode(m); setErrorMessage(""); setSuccessMessage(""); setProfileWarning(""); }}
+              className={`rounded-lg px-3 py-2 text-sm transition ${
+                mode === m ? "bg-cyan-500/20 text-cyan-100" : "text-slate-300 hover:text-slate-100"
+              }`}>
+              {m === "login" ? t("login") : t("signup")}
+            </button>
+          ))}
         </div>
 
         <form onSubmit={handleSubmit} className="mt-5 space-y-4">
           {mode === "signup" && (
             <label className="block text-sm text-slate-300">
-              姓名（可选）
-              <input
-                type="text"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="例如：张三"
-                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400"
-              />
+              {t("name")}
+              <input type="text" value={name} onChange={e => setName(e.target.value)}
+                placeholder={t("namePh")}
+                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400" />
             </label>
           )}
 
           <label className="block text-sm text-slate-300">
             Email
-            <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@example.com"
-              required
-              autoComplete="email"
-              className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400"
-            />
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+              placeholder="you@example.com" required autoComplete="email"
+              className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400" />
           </label>
 
           <label className="block text-sm text-slate-300">
-            密码
-            <input
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              required
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
-              className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400"
-            />
+            {t("password")}
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+              required autoComplete={mode === "login" ? "current-password" : "new-password"}
+              className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100 outline-none transition focus:border-cyan-400" />
           </label>
 
           {errorMessage && (
-            <p className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-              {errorMessage}
-            </p>
+            <p className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{errorMessage}</p>
           )}
           {successMessage && (
-            <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">
-              {successMessage}
-            </p>
+            <p className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">{successMessage}</p>
           )}
           {showResend && mode === "signup" && (
-            <button
-              type="button"
-              onClick={handleResendVerification}
-              disabled={resendPending}
-              className="inline-flex w-full items-center justify-center rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-100 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {resendPending ? "重发中..." : "重新发送验证邮件"}
+            <button type="button" onClick={handleResendVerification} disabled={resendPending}
+              className="inline-flex w-full items-center justify-center rounded-xl border border-emerald-400/40 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-100 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-60">
+              {resendPending ? t("resending") : t("resend")}
             </button>
           )}
           {profileWarning && (
-            <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
-              {profileWarning}
-            </p>
+            <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">{profileWarning}</p>
           )}
 
-          <button
-            type="submit"
-            disabled={pending}
-            className="inline-flex w-full items-center justify-center rounded-xl border border-cyan-300/50 bg-cyan-500/15 px-4 py-2.5 text-sm font-medium text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {pending ? "处理中..." : mode === "login" ? "登录" : "注册"}
+          <button type="submit" disabled={pending}
+            className="inline-flex w-full items-center justify-center rounded-xl border border-cyan-300/50 bg-cyan-500/15 px-4 py-2.5 text-sm font-medium text-cyan-100 transition hover:bg-cyan-500/25 disabled:cursor-not-allowed disabled:opacity-60">
+            {pending ? t("pending") : t("submit")}
           </button>
         </form>
       </div>

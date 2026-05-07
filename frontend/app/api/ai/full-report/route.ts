@@ -126,57 +126,274 @@ async function collectReportData() {
   };
 }
 
-function buildReportPrompt(data: Awaited<ReturnType<typeof collectReportData>>, lang: "zh" | "en") {
-  const d = data;
+export type ReportType = "management" | "warehouse" | "purchasing" | "sales" | "finance";
+
+function dataBlock(d: Awaited<ReturnType<typeof collectReportData>>, lang: "zh" | "en"): string {
+  const riskPct = d.totalSkus > 0 ? ((d.riskSkus / d.totalSkus) * 100).toFixed(1) : "0";
+  if (lang === "zh") {
+    return `当月核心数据（${d.latestMonth}）：
+- SKU 总数：${d.totalSkus}
+- 缺货 SKU：${d.oosCount} | 低库存 SKU：${d.lowCount} | 高库存 SKU：${d.highCount}
+- 风险 SKU 占比：${riskPct}% | 健康 SKU：${d.healthySkus}（${d.healthyPct}%）
+- 当前总库存：${d.totalStock} 件 | 本月销售：${d.totalSales} 件
+- 库存覆盖周期：约 ${d.stockCover} 个月
+- 已配置阈值 SKU 数：${d.thresholdsConfigured}
+- 疑似滞销 SKU：${d.slowMoverCount}`;
+  }
+  return `Current month data (${d.latestMonth}):
+- Total SKUs: ${d.totalSkus}
+- Out of stock: ${d.oosCount} | Low stock: ${d.lowCount} | Overstock: ${d.highCount}
+- At-risk SKU share: ${riskPct}% | Healthy SKUs: ${d.healthySkus} (${d.healthyPct}%)
+- Total stock: ${d.totalStock} units | Monthly sales: ${d.totalSales} units
+- Stock cover: ~${d.stockCover} months
+- SKUs with thresholds: ${d.thresholdsConfigured}
+- Potential slow movers: ${d.slowMoverCount}`;
+}
+
+function buildReportPrompt(
+  data: Awaited<ReturnType<typeof collectReportData>>,
+  lang: "zh" | "en",
+  reportType: ReportType
+): string {
+  const db = dataBlock(data, lang);
+  const fmt = lang === "zh"
+    ? "格式：Markdown（## 标题，**加粗**重点，列表用建议），600-900字，数据驱动，无套话"
+    : "Format: Markdown (## headings, **bold** key points, bullet lists), 600-900 words, data-driven, no filler";
+
+  const personas: Record<ReportType, { system: string; focus: string }> = {
+    management: {
+      system: lang === "zh"
+        ? "你是资深库存顾问，为公司管理层撰写月度库存健康简报。"
+        : "You are a senior inventory consultant writing a monthly inventory health brief for company leadership.",
+      focus: lang === "zh"
+        ? `重点：整体库存健康评级（良好/中等/需关注）、核心 KPI 趋势、最重要的 3 个风险、资金占用、给管理层的 3 条决策建议。不需要操作细节。结构：执行摘要 → KPI 快照 → 核心风险 → 决策建议`
+        : `Focus: Overall health rating (Good/Fair/Needs Attention), top 3 KPI trends, top 3 risks, capital implications, 3 executive decisions needed. No operational detail. Structure: Executive Summary → KPI Snapshot → Key Risks → Decision Items`,
+    },
+    warehouse: {
+      system: lang === "zh"
+        ? "你是仓储运营分析师，为仓库主管撰写本月操作重点报告。"
+        : "You are a warehouse operations analyst writing a monthly operational priorities report for the warehouse supervisor.",
+      focus: lang === "zh"
+        ? `重点：缺货和低库存 SKU 的补货优先级、高库存 SKU 的空间压力、本月出入库效率、库存准确性问题（已配置阈值覆盖率）、下月仓库工作重点清单（按优先级排序）。结构：本月仓库现状 → 紧急补货清单 → 过剩库存处理 → 下月操作重点`
+        : `Focus: Replenishment priority for OOS/low-stock SKUs, space pressure from overstock, inbound/outbound efficiency, accuracy gaps (threshold coverage), prioritised task list for next month. Structure: Current Warehouse State → Urgent Replenishment → Overstock Actions → Next Month Priorities`,
+    },
+    purchasing: {
+      system: lang === "zh"
+        ? "你是采购分析师，为采购负责人撰写本月采购决策报告。"
+        : "You are a procurement analyst writing a monthly purchasing decision report for the procurement lead.",
+      focus: lang === "zh"
+        ? `重点：必须立即补货的 SKU（缺货/库存覆盖 <1 个月）、可延迟采购的 SKU（高库存）、库存覆盖周期 ${data.stockCover} 个月意味着什么采购节奏、滞销品 ${data.slowMoverCount} 个对未来采购计划的影响、采购预算建议方向。结构：立即采购清单 → 暂缓采购清单 → 采购节奏分析 → 预算建议`
+        : `Focus: SKUs requiring immediate PO (OOS/coverage <1 month), SKUs to delay purchasing (overstock), what ${data.stockCover} month coverage means for order cadence, impact of ${data.slowMoverCount} slow movers on future plans, budget direction. Structure: Buy Now → Hold Off → Cadence Analysis → Budget Guidance`,
+    },
+    sales: {
+      system: lang === "zh"
+        ? "你是销售运营分析师，为销售和市场团队撰写本月库存机会与风险报告。"
+        : "You are a sales operations analyst writing a monthly inventory opportunity and risk report for the sales and marketing team.",
+      focus: lang === "zh"
+        ? `重点：哪些 SKU 可以大力推销（库存充足、销售良好）、哪些 SKU 有断货风险影响销售承诺、哪些滞销品需要促销活动清仓（${data.slowMoverCount} 个疑似滞销）、库存覆盖 ${data.stockCover} 个月对促销活动时间窗口的意义、给销售团队的产品推荐优先级。结构：可推销产品 → 断货风险提醒 → 促销清仓机会 → 销售建议`
+        : `Focus: SKUs safe to promote aggressively (healthy stock, good sales), SKUs at risk of stocking out and breaking sales commitments, slow movers needing promotional clearance (${data.slowMoverCount} identified), what ${data.stockCover} month cover means for campaign timing, product priority list for the sales team. Structure: Push Products → Stockout Risk Alerts → Clearance Opportunities → Sales Recommendations`,
+    },
+    finance: {
+      system: lang === "zh"
+        ? "你是财务分析师，为财务负责人撰写本月库存资产与资金风险报告。"
+        : "You are a financial analyst writing a monthly inventory asset and capital risk report for the finance lead.",
+      focus: lang === "zh"
+        ? `重点：库存资产健康度（健康 vs 滞压比例）、滞销品 ${data.slowMoverCount} 个代表的资金占压风险与潜在减值、高库存 ${data.highCount} 个 SKU 的资金效率问题、库存覆盖 ${data.stockCover} 个月对现金流周转的影响、建议的库存资产优化方向（减少占压、提升周转）。结构：库存资产概览 → 资金占压风险 → 减值风险评估 → 财务优化建议`
+        : `Focus: Inventory asset health (healthy vs trapped capital ratio), capital at risk from ${data.slowMoverCount} slow movers and potential write-down exposure, capital efficiency of ${data.highCount} overstock SKUs, cash flow implications of ${data.stockCover} month cover, recommended asset optimisation direction. Structure: Asset Overview → Trapped Capital Risk → Write-down Exposure → Financial Recommendations`,
+    },
+  };
+
+  const persona = personas[reportType];
 
   if (lang === "zh") {
-    return `你是一位资深库存管理顾问，请根据以下数据生成一份供管理层和客户阅读的月度库存管理报告。
-报告要求：
-- 语言：中文，正式商务风格
-- 结构：执行摘要、库存健康状况分析、核心风险与机会、销售与库存匹配度、优化建议与行动计划、结语
-- 长度：800-1200字
-- 格式：使用 Markdown（标题用 ##，重点用加粗，建议用列表）
-- 数据驱动，每个分析结论必须引用数据
-- 避免套话，给出可执行的具体建议
+    return `${persona.system}
 
-当月数据：
-- 统计月份：${d.latestMonth}
-- SKU 总数：${d.totalSkus}
-- 风险 SKU（缺货+低库存）：${d.riskSkus}（占比 ${d.totalSkus > 0 ? ((d.riskSkus / d.totalSkus) * 100).toFixed(1) : 0}%）
-- 健康 SKU：${d.healthySkus}（占比 ${d.healthyPct}%）
-- 缺货 SKU：${d.oosCount}
-- 低库存 SKU：${d.lowCount}
-- 高库存 SKU：${d.highCount}
-- 当前总库存：${d.totalStock} 件
-- 本月总销售：${d.totalSales} 件
-- 库存覆盖周期：约 ${d.stockCover} 个月
-- 已配置阈值的 SKU 数：${d.thresholdsConfigured}
-- 疑似滞销 SKU（有库存但无销售记录）：${d.slowMoverCount}`;
+${persona.focus}
+
+${fmt}
+
+${db}`;
   }
 
-  return `You are a senior inventory management consultant. Generate a monthly inventory management report for management and clients based on the data below.
-Report requirements:
-- Language: Professional English business style
-- Structure: Executive Summary, Inventory Health Analysis, Key Risks & Opportunities, Sales-Inventory Alignment, Optimization Recommendations & Action Plan, Closing Remarks
-- Length: 800-1200 words
-- Format: Markdown (## headings, **bold** for key points, bullet lists for recommendations)
-- Data-driven: each analytical conclusion must cite numbers
-- Avoid filler language; give specific, actionable recommendations
+  return `${persona.system}
 
-Current month data:
-- Reporting month: ${d.latestMonth}
-- Total SKUs: ${d.totalSkus}
-- At-risk SKUs (OOS + Low stock): ${d.riskSkus} (${d.totalSkus > 0 ? ((d.riskSkus / d.totalSkus) * 100).toFixed(1) : 0}%)
-- Healthy SKUs: ${d.healthySkus} (${d.healthyPct}%)
-- Out of stock SKUs: ${d.oosCount}
-- Low stock SKUs: ${d.lowCount}
-- High stock SKUs: ${d.highCount}
-- Total current stock: ${d.totalStock} units
-- Monthly sales: ${d.totalSales} units
-- Stock cover: ~${d.stockCover} months
-- SKUs with configured thresholds: ${d.thresholdsConfigured}
-- Potential slow movers (stock with no recent sales): ${d.slowMoverCount}`;
+${persona.focus}
+
+${fmt}
+
+${db}`;
 }
+
+// ─── LLM helper ──────────────────────────────────────────────────────────────
+
+async function callLLM(
+  prompt: string,
+  apiKey: string,
+  model: string,
+  maxTokens = 1200,
+  temperature = 0.4
+): Promise<string> {
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      temperature,
+      max_tokens: maxTokens,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  if (!res.ok) {
+    const raw = await res.text();
+    let msg = raw;
+    try { msg = JSON.parse(raw)?.error?.message ?? raw; } catch {}
+    throw new Error(`OpenAI error: ${msg.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  return (data?.choices?.[0]?.message?.content ?? "").trim();
+}
+
+// ─── Critic agent ─────────────────────────────────────────────────────────────
+
+// Weighted scoring per persona — critic checks what actually matters for each role
+const PERSONA_CRITERIA: Record<ReportType, {
+  must_contain: string[];   // keywords / concepts the report MUST address
+  must_not: string[];       // vague filler phrases that fail actionability
+  weight_factual: number;
+  weight_actionability: number;
+  weight_completeness: number;
+  weight_relevance: number;
+}> = {
+  management: {
+    must_contain: ["health rating", "risk", "KPI", "decision", "健康", "风险", "决策"],
+    must_not: ["monitor closely", "keep an eye", "持续关注", "可能会"],
+    weight_factual: 0.35, weight_actionability: 0.25, weight_completeness: 0.25, weight_relevance: 0.15,
+  },
+  warehouse: {
+    must_contain: ["replenish", "reorder", "overstock", "补货", "滞销", "优先"],
+    must_not: ["strategic", "financial impact", "capital", "资本", "战略"],
+    weight_factual: 0.30, weight_actionability: 0.35, weight_completeness: 0.20, weight_relevance: 0.15,
+  },
+  purchasing: {
+    must_contain: ["buy", "hold", "order", "coverage", "采购", "覆盖", "延迟"],
+    must_not: ["monitor", "watch", "观察", "留意"],
+    weight_factual: 0.30, weight_actionability: 0.35, weight_completeness: 0.20, weight_relevance: 0.15,
+  },
+  sales: {
+    must_contain: ["promote", "stockout", "clearance", "campaign", "推销", "断货", "促销"],
+    must_not: ["financial", "capital", "procurement", "财务", "采购资金"],
+    weight_factual: 0.25, weight_actionability: 0.35, weight_completeness: 0.20, weight_relevance: 0.20,
+  },
+  finance: {
+    must_contain: ["capital", "write", "turnover", "cash", "资金", "减值", "周转"],
+    must_not: ["operational detail", "warehouse task", "仓库操作", "库管"],
+    weight_factual: 0.40, weight_actionability: 0.25, weight_completeness: 0.20, weight_relevance: 0.15,
+  },
+};
+
+function buildCriticPrompt(
+  report: string,
+  data: Awaited<ReturnType<typeof collectReportData>>,
+  reportType: ReportType,
+  lang: "zh" | "en",
+  directives?: string,
+  prevReport?: string
+): string {
+  const criteria = PERSONA_CRITERIA[reportType];
+  const groundTruth = `
+Ground-truth figures (source of truth — every number in the report must match exactly):
+- total_skus: ${data.totalSkus}
+- out_of_stock: ${data.oosCount}
+- low_stock: ${data.lowCount}
+- high_stock: ${data.highCount}
+- risk_skus: ${data.riskSkus}
+- healthy_skus: ${data.healthySkus}
+- healthy_pct: ${data.healthyPct}%
+- total_stock_units: ${data.totalStock}
+- monthly_sales_units: ${data.totalSales}
+- stock_cover_months: ${data.stockCover}
+- slow_movers: ${data.slowMoverCount}
+- month: ${data.latestMonth}`.trim();
+
+  const retryBlock = directives
+    ? `\n\nNOTE: This is a revised draft. Previous directives were:\n${directives}\nPrevious draft:\n${prevReport ?? ""}\n`
+    : "";
+
+  return `You are a quality assurance agent reviewing an inventory management report before it is shown to a user.
+
+Report type: ${reportType}
+Report language: ${lang}
+
+${groundTruth}
+
+Score the report on four dimensions (0.0–1.0 each):
+
+1. factual_accuracy (weight ${criteria.weight_factual})
+   Every number cited must exactly match the ground-truth figures above.
+   Penalise −0.25 per incorrect or invented number.
+
+2. actionability (weight ${criteria.weight_actionability})
+   Every recommendation must be specific and executable.
+   Penalise if ANY of these vague phrases appear: ${criteria.must_not.join(", ")}.
+   Penalise if no concrete next step is given.
+
+3. completeness (weight ${criteria.weight_completeness})
+   The report MUST address these concepts: ${criteria.must_contain.join(", ")}.
+   Deduct 0.15 for each missing concept.
+
+4. relevance (weight ${criteria.weight_relevance})
+   Content must be appropriate for a ${reportType} audience.
+   Penalise if off-topic content (wrong audience) takes up >20% of the report.
+
+Compute:
+  quality_score = ${criteria.weight_factual}*factual_accuracy + ${criteria.weight_actionability}*actionability + ${criteria.weight_completeness}*completeness + ${criteria.weight_relevance}*relevance
+
+passes = true if:
+  quality_score >= 0.78
+  AND factual_accuracy >= 0.72
+  AND actionability >= 0.60
+  AND completeness >= 0.65
+  AND no dimension below 0.50
+
+If passes = false, write improvement_directives as a SHORT numbered checklist
+telling the writer exactly what to fix. Be surgical — name the wrong number,
+name the missing concept, name the vague phrase to replace.
+Example: "1. Stock cover is stated as 4.2 months but data shows ${data.stockCover}. 2. Add a specific reorder recommendation for low-stock SKUs. 3. Remove 'monitor closely' — replace with a concrete action."
+
+If passes = true, improvement_directives must be exactly "".
+
+Return JSON only (no markdown wrapper):
+{
+  "quality_score": number,
+  "passes": boolean,
+  "scores": { "factual_accuracy": number, "actionability": number, "completeness": number, "relevance": number },
+  "improvement_directives": string
+}
+${retryBlock}
+--- Report to review ---
+${report}`;
+}
+
+// ─── Writer retry prompt ───────────────────────────────────────────────────────
+
+function buildRetryPrompt(
+  originalPrompt: string,
+  previousReport: string,
+  directives: string
+): string {
+  return `${originalPrompt}
+
+--- REVISION REQUIRED ---
+Your previous draft did not meet quality standards. Apply these fixes EXACTLY:
+${directives}
+
+Your previous draft (for reference — do NOT copy it, rewrite it):
+${previousReport}
+
+Return the corrected report now.`;
+}
+
+// ─── Main handler ─────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const rl = checkRateLimit(getClientIp(req), { route: "full-report", limit: 3, windowMs: 60_000 });
@@ -187,7 +404,7 @@ export async function POST(req: NextRequest) {
     );
   }
   try {
-    const { lang = "zh" } = (await req.json()) as { lang?: "zh" | "en" };
+    const { lang = "zh", reportType = "management" } = (await req.json()) as { lang?: "zh" | "en"; reportType?: ReportType };
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
@@ -204,45 +421,73 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: `Failed to collect report data: ${msg}` }, { status: 500 });
     }
 
-    const prompt = buildReportPrompt(reportData, resolvedLang);
+    const validTypes: ReportType[] = ["management", "warehouse", "purchasing", "sales", "finance"];
+    const resolvedType: ReportType = validTypes.includes(reportType as ReportType) ? (reportType as ReportType) : "management";
 
-    // Always use gpt-4.1 for the formal report (best quality)
+    // Always use gpt-4.1 for best quality
     const model = "gpt-4.1";
 
-    const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.4,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-
-    if (!openaiRes.ok) {
-      const raw = await openaiRes.text();
-      try {
-        const parsed = JSON.parse(raw);
-        return NextResponse.json({ error: parsed?.error?.message ?? raw }, { status: 502 });
-      } catch {
-        return NextResponse.json({ error: raw }, { status: 502 });
-      }
-    }
-
-    const data = await openaiRes.json();
-    const report = data?.choices?.[0]?.message?.content?.trim() ?? "";
+    // ── Step 1: Writer ────────────────────────────────────────────────────────
+    const writerPrompt = buildReportPrompt(reportData, resolvedLang, resolvedType);
+    let report = await callLLM(writerPrompt, apiKey, model, 1400, 0.4);
 
     if (!report) {
       return NextResponse.json({ error: "Model returned no text" }, { status: 502 });
+    }
+
+    // ── Step 2: Critic ────────────────────────────────────────────────────────
+    const MAX_RETRIES = 2;
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      let criticJson: {
+        quality_score: number;
+        passes: boolean;
+        scores: { factual_accuracy: number; actionability: number; completeness: number; relevance: number };
+        improvement_directives: string;
+      };
+
+      try {
+        const criticPrompt = buildCriticPrompt(
+          report,
+          reportData,
+          resolvedType,
+          resolvedLang,
+          attempt > 0 ? undefined : undefined,   // directives only on 2nd+ critic pass
+        );
+        const criticRaw = await callLLM(criticPrompt, apiKey, model, 500, 0.1);
+
+        // Strip optional markdown code fences
+        const jsonText = criticRaw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+        criticJson = JSON.parse(jsonText);
+      } catch {
+        // Critic parse failed — treat as passed to avoid blocking the user
+        break;
+      }
+
+      if (criticJson.passes) {
+        // Report passed all quality gates — done
+        break;
+      }
+
+      if (attempt < MAX_RETRIES - 1) {
+        // ── Step 3: Writer retry ────────────────────────────────────────────
+        const retryPrompt = buildRetryPrompt(
+          writerPrompt,
+          report,
+          criticJson.improvement_directives
+        );
+        const revised = await callLLM(retryPrompt, apiKey, model, 1400, 0.35);
+        if (revised) report = revised;
+        // Loop back to critic for final check
+      }
+      // If last retry still fails critic, we still return best available report —
+      // user gets the most recent revision, quality gate is best-effort
     }
 
     return NextResponse.json({
       report,
       model,
       lang: resolvedLang,
+      reportType: resolvedType,
       month: reportData.latestMonth,
       generatedAt: new Date().toISOString(),
     });

@@ -14,6 +14,7 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { label: { zh: "首页", en: "Home" }, href: "/home", icon: "🏠" },
   { label: { zh: "数据中心", en: "Data Center" }, href: "/data-center", icon: "🌐" },
+  { label: { zh: "扫码站", en: "Scanner" }, href: "/scanner", icon: "📷" },
   { label: { zh: "分析", en: "Analysis" }, href: "/analysis", icon: "🖲️" },
   { label: { zh: "营销专栏", en: "Marketing" }, href: "/marketing", icon: "📣" },
   { label: { zh: "AI 问答", en: "Ask AI" }, href: "/ask", icon: "💬" },
@@ -120,24 +121,24 @@ export default function Sidebar() {
         </nav>
 
         <div className="mt-auto border-t border-slate-800 pt-4">
+          {/* Compact language pill */}
           <button
             type="button"
             onClick={toggleLang}
-            className={`mb-2 flex w-full items-center rounded-xl border border-slate-700 bg-slate-900 text-left transition hover:border-slate-500 hover:bg-slate-800 ${
-              collapsed ? "justify-center px-2 py-2" : "justify-between px-3 py-2"
+            className={`mb-2 flex items-center rounded-full border border-slate-700 bg-slate-950 transition hover:border-slate-500 ${
+              collapsed ? "mx-auto px-2 py-1" : "px-3 py-1"
             }`}
           >
             {collapsed ? (
-              <span className="text-xs font-medium text-slate-100">
-                {lang === "zh" ? "中/EN" : "EN/中"}
+              <span className="text-[11px] font-medium text-slate-300">
+                {lang === "zh" ? "中" : "EN"}
               </span>
             ) : (
-              <>
-                <span className="text-xs text-slate-400">{text.language}</span>
-                <span className="text-sm font-medium text-slate-100">
-                  {lang === "zh" ? "中文 / EN" : "EN / 中文"}
-                </span>
-              </>
+              <span className="flex items-center gap-1.5 text-xs">
+                <span className={lang === "zh" ? "font-semibold text-slate-100" : "text-slate-500"}>中</span>
+                <span className="text-slate-700">|</span>
+                <span className={lang === "en" ? "font-semibold text-slate-100" : "text-slate-500"}>EN</span>
+              </span>
             )}
           </button>
 
