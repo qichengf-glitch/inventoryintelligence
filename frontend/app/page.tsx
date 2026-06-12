@@ -15,7 +15,7 @@ export default function LandingPage() {
           href="/auth"
           className="mt-12 inline-flex items-center rounded-xl border border-cyan-300/50 bg-cyan-500/10 px-10 py-3 text-base font-semibold text-cyan-100 transition hover:border-cyan-200 hover:bg-cyan-500/20"
         >
-          开始
+          start
         </Link>
       </div>
     </section>

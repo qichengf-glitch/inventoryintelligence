@@ -14,7 +14,6 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { label: { zh: "首页", en: "Home" }, href: "/home", icon: "🏠" },
   { label: { zh: "数据中心", en: "Data Center" }, href: "/data-center", icon: "🌐" },
-  { label: { zh: "扫码站", en: "Scanner" }, href: "/scanner", icon: "📷" },
   { label: { zh: "分析", en: "Analysis" }, href: "/analysis", icon: "🖲️" },
   { label: { zh: "营销专栏", en: "Marketing" }, href: "/marketing", icon: "📣" },
   { label: { zh: "AI 问答", en: "Ask AI" }, href: "/ask", icon: "💬" },
