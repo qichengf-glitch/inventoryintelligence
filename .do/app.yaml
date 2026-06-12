@@ -47,3 +47,5 @@ services:
     value: month_end_stock
   - key: OPENAI_MODEL
     value: gpt-4o-mini
+  - key: NC_SYNC_API_KEY
+    type: SECRET

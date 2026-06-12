@@ -15,7 +15,7 @@ RUN npm --prefix frontend ci \
 
 COPY . .
 
-RUN npm --prefix frontend run build
+RUN npm run build
 
 ENV NODE_ENV=production
 ENV PORT=8080
